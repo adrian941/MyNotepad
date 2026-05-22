@@ -62,7 +62,7 @@ namespace MinimalNotepad
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            GlobalClipboardMonitor.Start(this);
+            // Daemon owns its own HWND for clipboard listening — nothing to do here
         }
 
         // ── Window shell ──────────────────────────────────────────────────────
@@ -325,6 +325,9 @@ namespace MinimalNotepad
             ConfigLoader.SaveSettings(_settings, _settingsFile);
             _allWindows.Remove(this);
             GlobalClipboardMonitor.EnabledChanged -= OnGlobalClipboardEnabledChanged;
+
+            // If this was the last editor window and daemon is off → exit
+            Program.TryShutdownIfIdle();
         }
 
         // ── Formatting apply + undo ───────────────────────────────────────────
