@@ -216,6 +216,27 @@ namespace MinimalNotepad
             footerRow.Children.Add(dot2);
             footerRow.Children.Add(togglePill);
 
+            // Hide the toggle pill (and its separator dot) when global monitoring is off
+            void UpdateToggleVisibility()
+            {
+                bool show = GlobalClipboardMonitor.IsEnabled;
+                dot2.Visibility      = show ? Visibility.Visible : Visibility.Collapsed;
+                togglePill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+                // If global was just turned off and we're in Global mode, snap back to App
+                if (!show && _mode == HistoryMode.Global)
+                {
+                    _mode = HistoryMode.App;
+                    toggleLabel.Text = "⇄  Application History";
+                    Title = "Clipboard History";
+                    NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
+                    ClipboardHistory.HistoryChanged       += OnHistoryChanged;
+                    RefreshCards();
+                }
+            }
+            UpdateToggleVisibility();
+            GlobalClipboardMonitor.EnabledChanged += _ =>
+                Dispatcher.InvokeAsync(UpdateToggleVisibility);
+
             var separator = new Border
             {
                 Height     = 1,
@@ -307,13 +328,14 @@ namespace MinimalNotepad
                 Child        = previewBlock
             };
 
-            // Gradient fade at the bottom of the clip area
+            // Gradient fade at the bottom of the clip area — hidden initially
             var fadeOverlay = new Border
             {
                 Height            = 24,
                 VerticalAlignment = VerticalAlignment.Bottom,
                 IsHitTestVisible  = false,
-                Background        = MakeFade(Colors.White)
+                Background        = MakeFade(Colors.White),
+                Visibility        = Visibility.Collapsed   // shown only if content overflows
             };
 
             var previewGrid = new Grid();
@@ -397,8 +419,18 @@ namespace MinimalNotepad
                 fadeOverlay.Background = MakeFade(Colors.White);
             };
 
-            // ── Follow-mouse popup bubble ─────────────────────────────────────
-            AttachFollowMouseBubble(card, entry, spans);
+            // ── After layout: decide fade + bubble based on actual overflow ─────
+            bool bubbleAttached = false;
+            previewBlock.Loaded += (_, _) =>
+            {
+                bool overflows = previewBlock.ActualHeight > clipBox.MaxHeight;
+                fadeOverlay.Visibility = overflows ? Visibility.Visible : Visibility.Collapsed;
+                if (overflows && !bubbleAttached)
+                {
+                    bubbleAttached = true;
+                    AttachFollowMouseBubble(card, entry, spans);
+                }
+            };
 
             // ── Click → paste ─────────────────────────────────────────────────
             card.MouseLeftButtonUp += (_, _) => PasteEntry(entry, spans);
@@ -548,7 +580,7 @@ namespace MinimalNotepad
                 Child        = content
             };
 
-            // Bottom fade gradient — always present, only visible when content overflows
+            // Bottom fade gradient — only visible when content overflows
             var fadeBar = new System.Windows.Shapes.Rectangle
             {
                 Height            = 32,
@@ -590,27 +622,53 @@ namespace MinimalNotepad
                 PopupAnimation     = PopupAnimation.None
             };
 
+            // ── 1.5 s hover-still delay before showing ────────────────────────
+            var hoverTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(750)
+            };
+
             Point lastMouseDiu = default;
 
-            card.MouseEnter += (_, me) =>
+            hoverTimer.Tick += (_, _) =>
             {
-                lastMouseDiu = ToScreenDiu(card, me.GetPosition(card));
+                hoverTimer.Stop();
                 popup.HorizontalOffset = lastMouseDiu.X + 18;
                 popup.VerticalOffset   = lastMouseDiu.Y + 18;
                 popup.IsOpen = true;
             };
 
-            popup.Opened += (_, _) =>
-                PositionPopup(popup, bubbleBorder, lastMouseDiu);
+            card.MouseEnter += (_, me) =>
+            {
+                lastMouseDiu = ToScreenDiu(card, me.GetPosition(card));
+                hoverTimer.Stop();
+                hoverTimer.Start();
+            };
 
             card.MouseMove += (_, me) =>
             {
-                if (!popup.IsOpen) return;
                 lastMouseDiu = ToScreenDiu(card, me.GetPosition(card));
-                PositionPopup(popup, bubbleBorder, lastMouseDiu);
+                if (popup.IsOpen)
+                {
+                    // already open — just reposition
+                    PositionPopup(popup, bubbleBorder, lastMouseDiu);
+                }
+                else
+                {
+                    // not yet open — reset the delay on movement
+                    hoverTimer.Stop();
+                    hoverTimer.Start();
+                }
             };
 
-            card.MouseLeave += (_, _) => popup.IsOpen = false;
+            popup.Opened += (_, _) =>
+                PositionPopup(popup, bubbleBorder, lastMouseDiu);
+
+            card.MouseLeave += (_, _) =>
+            {
+                hoverTimer.Stop();
+                popup.IsOpen = false;
+            };
         }
 
         /// <summary>Converts a local element point to screen coords in device-independent units.</summary>
