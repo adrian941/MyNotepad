@@ -394,9 +394,9 @@ namespace MinimalNotepad
 
                     // ── Highlights (typeId = 2) ── very light pastels, Material 50 palette ──
                     new() { KeyNumber = 6, TypeId = 2, ColorHex = "#E8F5E9" }, // Green highlight
-                    new() { KeyNumber = 7, TypeId = 2, ColorHex = "#FFFDE7" }, // Yellow highlight
+                    new() { KeyNumber = 7, TypeId = 2, ColorHex = "#BBDEFB" }, // Blue highlight
                     new() { KeyNumber = 8, TypeId = 2, ColorHex = "#FFF3E0" }, // Orange highlight
-                    new() { KeyNumber = 9, TypeId = 2, ColorHex = "#FFEBEE" }, // Red highlight
+                    new() { KeyNumber = 9, TypeId = 2, ColorHex = "#FFCDD2" }, // Red highlight (more vivid)
                     new() { KeyNumber = 0, TypeId = 2, ColorHex = "#F3E5F5" }, // Violet highlight
                 }
             };
