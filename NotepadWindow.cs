@@ -18,6 +18,7 @@ namespace MinimalNotepad
         private readonly string                   _settingsFile;
         private readonly IReadOnlyDictionary<int, string> _textColorMap;
         private readonly IReadOnlyDictionary<int, string> _highlightColorMap;
+        private readonly IReadOnlyList<ColorEntry>        _colorEntries;
         private readonly List<NotepadWindow>      _allWindows;
 
         private string     _prefixTitle = "";
@@ -25,18 +26,19 @@ namespace MinimalNotepad
         private FormattingManager _fmtManager = null!;
 
         public NotepadWindow(
-            AppSettings                       settings,
-            string                            settingsFile,
-            IReadOnlyDictionary<int, string>  textColorMap,
-            IReadOnlyDictionary<int, string>  highlightColorMap,
-            List<NotepadWindow>               allWindows,
+            AppSettings               settings,
+            string                    settingsFile,
+            IReadOnlyList<ColorEntry> colorEntries,
+            List<NotepadWindow>       allWindows,
             double offsetX = -1,
             double offsetY = -1)
         {
+            var (textColorMap, highlightColorMap) = ConfigLoader.BuildColorMaps(colorEntries);
             _settings          = settings;
             _settingsFile      = settingsFile;
             _textColorMap      = textColorMap;
             _highlightColorMap = highlightColorMap;
+            _colorEntries      = colorEntries;
             _allWindows        = allWindows;
 
             InitializeWindow(offsetX, offsetY);
@@ -280,7 +282,7 @@ namespace MinimalNotepad
             if (e.Key == Key.N)
             {
                 var newWin = new NotepadWindow(
-                    _settings, _settingsFile, _textColorMap, _highlightColorMap, _allWindows,
+                    _settings, _settingsFile, _colorEntries, _allWindows,
                     Left + 30, Top + 30);
                 newWin.Show();
                 newWin.Activate();
@@ -485,6 +487,6 @@ namespace MinimalNotepad
         // ── Help / Quick Guide window (Ctrl+H) ────────────────────────────────
 
         void ShowHelpWindow() =>
-            HelpWindow.ShowOrActivate(_textColorMap, _highlightColorMap);
+            HelpWindow.ShowOrActivate(_colorEntries);
     }
 }

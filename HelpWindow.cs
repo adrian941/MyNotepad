@@ -1,9 +1,11 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using MinimalNotepad.Config;
 
 namespace MinimalNotepad
 {
@@ -19,10 +21,9 @@ namespace MinimalNotepad
         /// <summary>
         /// Opens the help window, or activates the already-open instance
         /// (even if it was opened from another process / exe instance).
+        /// All display data — names, colors, key numbers — come from <paramref name="colorEntries"/>.
         /// </summary>
-        public static void ShowOrActivate(
-            IReadOnlyDictionary<int, string> textColorMap,
-            IReadOnlyDictionary<int, string> highlightColorMap)
+        public static void ShowOrActivate(IReadOnlyList<ColorEntry> colorEntries)
         {
             // Already open in this process → just bring to front
             if (_instance != null) { _instance.Activate(); return; }
@@ -44,7 +45,7 @@ namespace MinimalNotepad
                 return;
             }
 
-            _instance = new HelpWindow(textColorMap, highlightColorMap);
+            _instance = new HelpWindow(colorEntries);
             _instance.Closed += (_, _) =>
             {
                 _instance = null;
@@ -55,18 +56,14 @@ namespace MinimalNotepad
 
         // ── Constructor ───────────────────────────────────────────────────────
 
-        HelpWindow(
-            IReadOnlyDictionary<int, string> textColorMap,
-            IReadOnlyDictionary<int, string> highlightColorMap)
+        HelpWindow(IReadOnlyList<ColorEntry> colorEntries)
         {
             Title                 = "Quick Guide";
             Width                 = 490;
             Height                = 720;
             ResizeMode            = ResizeMode.CanResize;
-            // CenterScreen: no Owner, so it positions itself independently
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Background            = Brushes.White;
-            // Not owned → never forced on top of unrelated OS windows
             ShowInTaskbar         = false;
 
             var scroll = new ScrollViewer
@@ -78,18 +75,23 @@ namespace MinimalNotepad
             scroll.Content = root;
             Content = scroll;
 
-            BuildContent(root, textColorMap, highlightColorMap);
+            BuildContent(root, colorEntries);
         }
 
         // ── Content builder ───────────────────────────────────────────────────
 
-        static void BuildContent(
-            StackPanel root,
-            IReadOnlyDictionary<int, string> textColorMap,
-            IReadOnlyDictionary<int, string> highlightColorMap)
+        static void BuildContent(StackPanel root, IReadOnlyList<ColorEntry> colorEntries)
         {
-            string TC(int key) => textColorMap.TryGetValue(key, out var h)      ? h : "#000000";
-            string HL(int key) => highlightColorMap.TryGetValue(key, out var h) ? h : "#FFFFFF";
+            var textEntries = colorEntries
+                .Where(e => e.TypeId == 1)
+                .OrderBy(e => e.KeyNumber)
+                .ToList();
+
+            // Highlights: key 6-9 first, then 0 last
+            var hlEntries = colorEntries
+                .Where(e => e.TypeId == 2)
+                .OrderBy(e => e.KeyNumber == 0 ? 10 : e.KeyNumber)
+                .ToList();
 
             // ── Header ────────────────────────────────────────────────────────
             root.Children.Add(new TextBlock
@@ -115,8 +117,11 @@ namespace MinimalNotepad
             root.Children.Add(Section("Text Colors  (select text first)"));
 
             var colorWrap = new WrapPanel { Margin = new Thickness(0, 4, 0, 4) };
-            foreach (var (k, name) in new[] { (1,"Green"), (2,"White"), (3,"Red"), (4,"Blue"), (5,"Violet") })
-                colorWrap.Children.Add(Row(Badge($"Ctrl+{k}"), Dot(TC(k)), Label(name)));
+            foreach (var e in textEntries)
+                colorWrap.Children.Add(Row(
+                    Badge($"Ctrl+{e.KeyNumber}"),
+                    Dot(e.ColorHex ?? "#000000"),
+                    Label(e.Name ?? $"Color {e.KeyNumber}")));
             root.Children.Add(colorWrap);
             root.Children.Add(Note("Same key again → resets to black"));
 
@@ -124,8 +129,11 @@ namespace MinimalNotepad
             root.Children.Add(Section("Highlights  (select text first)"));
 
             var hlWrap = new WrapPanel { Margin = new Thickness(0, 4, 0, 4) };
-            foreach (var (k, name) in new[] { (6,"Green"), (7,"Blue"), (8,"Orange"), (9,"Red"), (0,"Violet") })
-                hlWrap.Children.Add(Row(Badge($"Ctrl+{k}"), Swatch(HL(k)), Label(name)));
+            foreach (var e in hlEntries)
+                hlWrap.Children.Add(Row(
+                    Badge($"Ctrl+{e.KeyNumber}"),
+                    Swatch(e.ColorHex ?? "#FFFFFF"),
+                    Label(e.Name ?? $"Color {e.KeyNumber}")));
             root.Children.Add(hlWrap);
             root.Children.Add(Note("Same key again → removes highlight"));
 
@@ -190,8 +198,9 @@ namespace MinimalNotepad
             }
         };
 
-        // Colored dot (●) for text color swatches
-        // Light colors (e.g. white) get an outlined circle so they're visible on white background
+        // Colored dot (●) for text-color swatches.
+        // Light colors (e.g. white) get an outlined circle so they stay visible on white bg.
+        // The outlined border is sized to match the visual diameter of "●" at FontSize 13.
         static UIElement Dot(string hex)
         {
             var color = (Color)ColorConverter.ConvertFromString(hex);
@@ -199,8 +208,8 @@ namespace MinimalNotepad
             if (isLight)
                 return new Border
                 {
-                    Width = 13, Height = 13,
-                    CornerRadius = new CornerRadius(7),
+                    Width = 10, Height = 10,
+                    CornerRadius = new CornerRadius(5),
                     Background = Brush(hex),
                     BorderBrush = Brush("#999999"), BorderThickness = new Thickness(1),
                     Margin = new Thickness(0, 0, 5, 0),

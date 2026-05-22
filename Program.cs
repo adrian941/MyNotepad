@@ -19,11 +19,10 @@ namespace MinimalNotepad
 
             var settings    = ConfigLoader.LoadSettings(settingsFile);
             var colorConfig = ConfigLoader.LoadOrCreateColorConfig(colorsFile);
-            var (textColorMap, highlightColorMap) = ConfigLoader.BuildColorMaps(colorConfig);
 
             var allWindows  = new List<NotepadWindow>();
             var firstWindow = new NotepadWindow(
-                settings, settingsFile, textColorMap, highlightColorMap, allWindows);
+                settings, settingsFile, colorConfig.Colors, allWindows);
             firstWindow.Show();
 
             app.Run();
