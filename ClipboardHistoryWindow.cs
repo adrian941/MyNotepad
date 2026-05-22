@@ -1,10 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using MinimalNotepad.Formatting;
@@ -44,15 +48,75 @@ namespace MinimalNotepad
         {
             _targetWindow = target;
 
-            Title                 = "Clipboard History";
-            Width                 = 380;
-            Height                = 560;
-            MinWidth              = 260;
-            MinHeight             = 300;
+            Title     = "Clipboard History";
+            MinWidth  = 260;
+            MinHeight = 300;
             ResizeMode            = ResizeMode.CanResize;
-            WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Background            = new SolidColorBrush(Color.FromRgb(0xF3, 0xF3, 0xF3));
             ShowInTaskbar         = false;
+
+            // ── Restore last position / size ──────────────────────────────────
+            var state = LoadWindowState();
+            Width  = state.Width;
+            Height = state.Height;
+            if (state.HasPosition)
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual;
+                Left = state.Left;
+                Top  = state.Top;
+            }
+            else
+            {
+                WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            }
+
+            // ── Slim scrollbar style (5 px, rounded thumb, no arrows) ─────────
+            Resources.MergedDictionaries.Add((ResourceDictionary)XamlReader.Parse(@"
+<ResourceDictionary
+    xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'
+    xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>
+  <Style TargetType='{x:Type ScrollBar}'>
+    <Setter Property='Background' Value='Transparent'/>
+    <Setter Property='Width'     Value='5'/>
+    <Setter Property='MinWidth'  Value='5'/>
+    <Setter Property='Template'>
+      <Setter.Value>
+        <ControlTemplate TargetType='{x:Type ScrollBar}'>
+          <Grid Background='Transparent' Width='5'>
+            <Track x:Name='PART_Track' IsDirectionReversed='true'>
+              <Track.DecreaseRepeatButton>
+                <RepeatButton Command='ScrollBar.PageUpCommand'
+                              Opacity='0' Focusable='false' Height='0'/>
+              </Track.DecreaseRepeatButton>
+              <Track.Thumb>
+                <Thumb>
+                  <Thumb.Template>
+                    <ControlTemplate TargetType='{x:Type Thumb}'>
+                      <Border x:Name='Bd' Background='#C8C8C8'
+                              CornerRadius='2.5' Margin='1,3,1,3'/>
+                      <ControlTemplate.Triggers>
+                        <Trigger Property='IsMouseOver' Value='True'>
+                          <Setter TargetName='Bd' Property='Background' Value='#999999'/>
+                        </Trigger>
+                        <Trigger Property='IsDragging' Value='True'>
+                          <Setter TargetName='Bd' Property='Background' Value='#777777'/>
+                        </Trigger>
+                      </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                  </Thumb.Template>
+                </Thumb>
+              </Track.Thumb>
+              <Track.IncreaseRepeatButton>
+                <RepeatButton Command='ScrollBar.PageDownCommand'
+                              Opacity='0' Focusable='false' Height='0'/>
+              </Track.IncreaseRepeatButton>
+            </Track>
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+</ResourceDictionary>"));
 
             var scroll = new ScrollViewer
             {
@@ -93,22 +157,45 @@ namespace MinimalNotepad
             };
 
             // Toggle pill: shows current mode, click to switch
-            var toggleLink = MakeFooterLink("📋  App");
-            toggleLink.MouseLeftButtonUp += (_, _) =>
+            var toggleLabel = new TextBlock
+            {
+                Text              = "⇄  Application History",
+                FontSize          = 10.5,
+                FontFamily        = new FontFamily("Segoe UI"),
+                FontWeight        = FontWeights.Normal,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0x44, 0x72, 0xC4)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(6, 0, 6, 0)
+            };
+            var togglePill = new Border
+            {
+                Background      = new SolidColorBrush(Color.FromArgb(0x18, 0x44, 0x72, 0xC4)),
+                BorderBrush     = new SolidColorBrush(Color.FromArgb(0x55, 0x44, 0x72, 0xC4)),
+                BorderThickness = new Thickness(1),
+                CornerRadius    = new CornerRadius(10),
+                Padding         = new Thickness(0, 2, 0, 2),
+                Cursor          = Cursors.Hand,
+                Child           = toggleLabel
+            };
+            togglePill.MouseEnter += (_, _) =>
+                togglePill.Background = new SolidColorBrush(Color.FromArgb(0x30, 0x44, 0x72, 0xC4));
+            togglePill.MouseLeave += (_, _) =>
+                togglePill.Background = new SolidColorBrush(Color.FromArgb(0x18, 0x44, 0x72, 0xC4));
+            togglePill.MouseLeftButtonUp += (_, _) =>
             {
                 if (_mode == HistoryMode.App)
                 {
                     _mode = HistoryMode.Global;
-                    toggleLink.Text = "🌐  Global";
-                    Title = "Clipboard History — Global";
+                    toggleLabel.Text = "⇄  System History";
+                    Title = "Clipboard History — System";
                     ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
                     NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
                 }
                 else
                 {
                     _mode = HistoryMode.App;
-                    toggleLink.Text = "📋  App";
-                    Title = "Clipboard History — App";
+                    toggleLabel.Text = "⇄  Application History";
+                    Title = "Clipboard History — Application";
                     NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                     ClipboardHistory.HistoryChanged       += OnHistoryChanged;
                 }
@@ -127,7 +214,7 @@ namespace MinimalNotepad
             footerRow.Children.Add(dot1);
             footerRow.Children.Add(clearAllLink);
             footerRow.Children.Add(dot2);
-            footerRow.Children.Add(toggleLink);
+            footerRow.Children.Add(togglePill);
 
             var separator = new Border
             {
@@ -154,6 +241,7 @@ namespace MinimalNotepad
 
             Closed += (_, _) =>
             {
+                SaveWindowState(Left, Top, Width, Height);
                 ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
                 NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                 _instance = null;
@@ -309,31 +397,8 @@ namespace MinimalNotepad
                 fadeOverlay.Background = MakeFade(Colors.White);
             };
 
-            // ── Tooltip bubble — full content, max 75% screen height ──────────
-            double maxTooltipH    = SystemParameters.WorkArea.Height * 0.75;
-            var    tooltipContent = BuildFormattedBlock(entry.PlainText, spans, 12);
-
-            var tooltipScroll = new ScrollViewer
-            {
-                VerticalScrollBarVisibility   = ScrollBarVisibility.Auto,
-                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-                MaxHeight = maxTooltipH,
-                MaxWidth  = 480,
-                Padding   = new Thickness(12, 10, 12, 10),
-                Content   = tooltipContent
-            };
-
-            card.ToolTip = new ToolTip
-            {
-                Content         = tooltipScroll,
-                HasDropShadow   = true,
-                Padding         = new Thickness(0),
-                Background      = Brushes.White,
-                BorderBrush     = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-                BorderThickness = new Thickness(1)
-            };
-            ToolTipService.SetInitialShowDelay(card, 350);
-            ToolTipService.SetShowDuration(card, int.MaxValue);
+            // ── Follow-mouse popup bubble ─────────────────────────────────────
+            AttachFollowMouseBubble(card, entry, spans);
 
             // ── Click → paste ─────────────────────────────────────────────────
             card.MouseLeftButtonUp += (_, _) => PasteEntry(entry, spans);
@@ -461,6 +526,168 @@ namespace MinimalNotepad
         {
             var transparent = Color.FromArgb(0, solidColor.R, solidColor.G, solidColor.B);
             return new LinearGradientBrush(transparent, solidColor, 90);
+        }
+
+        // ── Follow-mouse popup bubble ─────────────────────────────────────────
+
+        static void AttachFollowMouseBubble(
+            Border card,
+            ClipboardEntry entry,
+            List<FormattingManager.SpanRecord>? spans)
+        {
+            double maxH = SystemParameters.WorkArea.Height * 0.75;
+
+            // Content TextBlock — clipped, no scrollbar
+            var content = BuildFormattedBlock(entry.PlainText, spans, 12);
+            content.Margin = new Thickness(12, 10, 12, 30); // extra bottom padding for fade
+
+            var clipHost = new Border
+            {
+                MaxHeight    = maxH,
+                ClipToBounds = true,
+                Child        = content
+            };
+
+            // Bottom fade gradient — always present, only visible when content overflows
+            var fadeBar = new System.Windows.Shapes.Rectangle
+            {
+                Height            = 32,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                IsHitTestVisible  = false,
+                Fill              = new LinearGradientBrush(
+                    Color.FromArgb(0, 0xFF, 0xFF, 0xFF),
+                    Colors.White,
+                    90)
+            };
+
+            var bubbleGrid = new Grid { MaxWidth = 480, MinWidth = 180 };
+            bubbleGrid.Children.Add(clipHost);
+            bubbleGrid.Children.Add(fadeBar);
+
+            var bubbleBorder = new Border
+            {
+                Background      = Brushes.White,
+                BorderBrush     = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+                BorderThickness = new Thickness(1),
+                CornerRadius    = new CornerRadius(6),
+                Child           = bubbleGrid,
+                Effect          = new DropShadowEffect
+                {
+                    Color       = Colors.Black,
+                    Opacity     = 0.15,
+                    BlurRadius  = 10,
+                    ShadowDepth = 2,
+                    Direction   = 270
+                }
+            };
+
+            var popup = new Popup
+            {
+                Child              = bubbleBorder,
+                AllowsTransparency = true,
+                Placement          = PlacementMode.Absolute,
+                StaysOpen          = true,
+                PopupAnimation     = PopupAnimation.None
+            };
+
+            Point lastMouseDiu = default;
+
+            card.MouseEnter += (_, me) =>
+            {
+                lastMouseDiu = ToScreenDiu(card, me.GetPosition(card));
+                popup.HorizontalOffset = lastMouseDiu.X + 18;
+                popup.VerticalOffset   = lastMouseDiu.Y + 18;
+                popup.IsOpen = true;
+            };
+
+            popup.Opened += (_, _) =>
+                PositionPopup(popup, bubbleBorder, lastMouseDiu);
+
+            card.MouseMove += (_, me) =>
+            {
+                if (!popup.IsOpen) return;
+                lastMouseDiu = ToScreenDiu(card, me.GetPosition(card));
+                PositionPopup(popup, bubbleBorder, lastMouseDiu);
+            };
+
+            card.MouseLeave += (_, _) => popup.IsOpen = false;
+        }
+
+        /// <summary>Converts a local element point to screen coords in device-independent units.</summary>
+        static Point ToScreenDiu(Visual source, Point localPoint)
+        {
+            var physPx = source.PointToScreen(localPoint);
+            var ps     = PresentationSource.FromVisual(source);
+            if (ps?.CompositionTarget == null) return physPx;
+            return ps.CompositionTarget.TransformFromDevice.Transform(physPx);
+        }
+
+        static void PositionPopup(Popup popup, FrameworkElement child, Point mouseDiu)
+        {
+            double popupW = child.ActualWidth  > 0 ? child.ActualWidth  : 480;
+            double popupH = child.ActualHeight > 0 ? child.ActualHeight : 200;
+
+            var work = SystemParameters.WorkArea;
+
+            // ── X: appear to the right of cursor; flip left if it overflows ────
+            double x = mouseDiu.X + 18;
+            if (x + popupW > work.Right)
+                x = mouseDiu.X - popupW - 8;
+            x = Math.Max(work.Left, x);
+
+            // ── Y: try below → try above → center vertically ──────────────────
+            double y;
+            double yBelow = mouseDiu.Y + 18;
+            double yAbove = mouseDiu.Y - popupH - 8;
+
+            if (yBelow + popupH <= work.Bottom)
+                y = yBelow;                                       // fits below
+            else if (yAbove >= work.Top)
+                y = yAbove;                                       // fits above
+            else
+                y = work.Top + (work.Height - popupH) / 2.0;     // center as last resort
+
+            y = Math.Clamp(y, work.Top, Math.Max(work.Top, work.Bottom - popupH));
+
+            popup.HorizontalOffset = x;
+            popup.VerticalOffset   = y;
+        }
+
+        // ── Window state persistence ──────────────────────────────────────────
+
+        static readonly string WindowStatePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "MinimalNotepad", "clipboard_window_state.json");
+
+        record ClipboardWindowState(double Left, double Top, double Width, double Height, bool HasPosition);
+
+        static ClipboardWindowState LoadWindowState()
+        {
+            try
+            {
+                if (File.Exists(WindowStatePath))
+                {
+                    var d = JsonSerializer.Deserialize<Dictionary<string, double>>(
+                                File.ReadAllText(WindowStatePath));
+                    if (d != null)
+                        return new ClipboardWindowState(d["Left"], d["Top"], d["Width"], d["Height"], true);
+                }
+            }
+            catch { }
+            return new ClipboardWindowState(0, 0, 380, 560, false);
+        }
+
+        static void SaveWindowState(double left, double top, double width, double height)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(WindowStatePath)!);
+                var d = new Dictionary<string, double>
+                    { ["Left"] = left, ["Top"] = top, ["Width"] = width, ["Height"] = height };
+                File.WriteAllText(WindowStatePath,
+                    JsonSerializer.Serialize(d));
+            }
+            catch { }
         }
     }
 }
