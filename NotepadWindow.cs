@@ -116,7 +116,7 @@ namespace MinimalNotepad
                 // Revert to normal title (using current caret position)
                 var caret = _editor.TextArea.Caret;
                 string prefix = string.IsNullOrEmpty(_prefixTitle) ? "" : _prefixTitle + " - ";
-                Title = $"{prefix}Minimal Notepad - Ln {caret.Line}, Col {caret.Column}";
+                Title = $"{prefix}Minimal Notepad - Ln {caret.Line}, Col {caret.Column - 1}";
             };
             hintTimer.Start();
         }
@@ -135,7 +135,7 @@ namespace MinimalNotepad
         {
             var caret = _editor.TextArea.Caret;
             string prefix = string.IsNullOrEmpty(_prefixTitle) ? "" : _prefixTitle + " - ";
-            Title = $"{prefix}Minimal Notepad - Ln {caret.Line}, Col {caret.Column}";
+            Title = $"{prefix}Minimal Notepad - Ln {caret.Line}, Col {caret.Column - 1}";
         }
 
         void OnPreviewMouseWheel(object? sender, MouseWheelEventArgs e)
@@ -394,7 +394,7 @@ namespace MinimalNotepad
             {
                 _prefixTitle = textBox.Text.Trim();
                 string prefix = string.IsNullOrEmpty(_prefixTitle) ? "" : _prefixTitle + " - ";
-                Title = $"{prefix}Minimal Notepad - Ln {_editor.TextArea.Caret.Line}, Col {_editor.TextArea.Caret.Column}";
+                Title = $"{prefix}Minimal Notepad - Ln {_editor.TextArea.Caret.Line}, Col {_editor.TextArea.Caret.Column - 1}";
                 dialog.Close();
             }
 
