@@ -97,6 +97,15 @@ namespace MinimalNotepad
             dock.Children.Add(_editor);
 
             Content = dock;
+
+            // Register Ctrl+Alt+V as a window-level command binding — this has higher
+            // priority than WPF's Alt menu activation and fires reliably even when
+            // Alt briefly captures the focus system.
+            var openHistoryCmd = new RoutedCommand();
+            CommandBindings.Add(new CommandBinding(openHistoryCmd, (_, _) =>
+                ClipboardHistoryWindow.ShowOrActivate(this)));
+            InputBindings.Add(new KeyBinding(openHistoryCmd,
+                new KeyGesture(Key.V, ModifierKeys.Control | ModifierKeys.Alt)));
         }
 
         // ── Rich-text formatting setup ────────────────────────────────────────
