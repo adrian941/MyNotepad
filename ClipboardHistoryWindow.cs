@@ -13,11 +13,14 @@ namespace MinimalNotepad
 {
     class ClipboardHistoryWindow : Window
     {
+        enum HistoryMode { App, Global }
+
         private static ClipboardHistoryWindow? _instance;
 
         private NotepadWindow _targetWindow;
         private StackPanel    _cardsPanel = null!;
         private bool          _suppressDeactivationClose;
+        private HistoryMode   _mode = HistoryMode.App;
 
         // ── Singleton ─────────────────────────────────────────────────────────
 
@@ -61,11 +64,12 @@ namespace MinimalNotepad
             _cardsPanel = new StackPanel();
             scroll.Content = _cardsPanel;
 
-            // ── Footer: open folder  ·  clear all ────────────────────────────
+            // ── Footer: open folder  ·  clear all  ·  toggle mode ────────────
             var openFolderLink = MakeFooterLink("📂  Open history folder");
             openFolderLink.MouseLeftButtonUp += (_, _) =>
             {
-                var dir = System.IO.Path.GetDirectoryName(ClipboardHistory.SavePath)!;
+                var dir = System.IO.Path.GetDirectoryName(
+                    _mode == HistoryMode.App ? ClipboardHistory.SavePath : NormalClipboardHistory.SavePath)!;
                 if (System.IO.Directory.Exists(dir))
                     System.Diagnostics.Process.Start("explorer.exe", dir);
             };
@@ -81,18 +85,38 @@ namespace MinimalNotepad
                     MessageBoxImage.Question);
                 _suppressDeactivationClose = false;
                 if (result == MessageBoxResult.Yes)
-                    ClipboardHistory.ClearAll();
+                {
+                    if (_mode == HistoryMode.App) ClipboardHistory.ClearAll();
+                    else                          NormalClipboardHistory.ClearAll();
+                }
                 Activate();
             };
 
-            var dot = new TextBlock
+            // Toggle pill: shows current mode, click to switch
+            var toggleLink = MakeFooterLink("📋  App");
+            toggleLink.MouseLeftButtonUp += (_, _) =>
             {
-                Text              = "·",
-                FontSize          = 11,
-                Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin            = new Thickness(6, 0, 6, 0)
+                if (_mode == HistoryMode.App)
+                {
+                    _mode = HistoryMode.Global;
+                    toggleLink.Text = "🌐  Global";
+                    Title = "Clipboard History — Global";
+                    ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
+                    NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
+                }
+                else
+                {
+                    _mode = HistoryMode.App;
+                    toggleLink.Text = "📋  App";
+                    Title = "Clipboard History — App";
+                    NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
+                    ClipboardHistory.HistoryChanged       += OnHistoryChanged;
+                }
+                RefreshCards();
             };
+
+            var dot1 = MakeDot();
+            var dot2 = MakeDot();
 
             var footerRow = new StackPanel
             {
@@ -100,8 +124,10 @@ namespace MinimalNotepad
                 Margin      = new Thickness(12, 5, 12, 9)
             };
             footerRow.Children.Add(openFolderLink);
-            footerRow.Children.Add(dot);
+            footerRow.Children.Add(dot1);
             footerRow.Children.Add(clearAllLink);
+            footerRow.Children.Add(dot2);
+            footerRow.Children.Add(toggleLink);
 
             var separator = new Border
             {
@@ -120,7 +146,7 @@ namespace MinimalNotepad
 
             RefreshCards();
 
-            // Live update when a copy/cut happens in any NotepadWindow
+            // Live updates
             ClipboardHistory.HistoryChanged += OnHistoryChanged;
 
             // Close when user clicks outside any Minimal Notepad window
@@ -128,7 +154,8 @@ namespace MinimalNotepad
 
             Closed += (_, _) =>
             {
-                ClipboardHistory.HistoryChanged -= OnHistoryChanged;
+                ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
+                NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                 _instance = null;
             };
         }
@@ -156,7 +183,9 @@ namespace MinimalNotepad
         {
             _cardsPanel.Children.Clear();
 
-            var entries = ClipboardHistory.Entries;
+            var entries = _mode == HistoryMode.App
+                ? ClipboardHistory.Entries
+                : NormalClipboardHistory.Entries;
 
             if (entries.Count == 0)
             {
@@ -230,7 +259,8 @@ namespace MinimalNotepad
             deleteBtn.MouseLeftButtonUp += (_, e) =>
             {
                 e.Handled = true; // don't trigger card paste
-                ClipboardHistory.Remove(entry);
+                if (_mode == HistoryMode.App) ClipboardHistory.Remove(entry);
+                else                          NormalClipboardHistory.Remove(entry);
             };
 
             var footer = new DockPanel { LastChildFill = false, Margin = new Thickness(0) };
@@ -336,6 +366,15 @@ namespace MinimalNotepad
                 tb.Foreground = new SolidColorBrush(Color.FromRgb(0xB0, 0xB0, 0xB0));
             return tb;
         }
+
+        static TextBlock MakeDot() => new TextBlock
+        {
+            Text              = "·",
+            FontSize          = 11,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(6, 0, 6, 0)
+        };
 
         // ── Rich text helpers ─────────────────────────────────────────────────
 

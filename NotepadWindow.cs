@@ -47,6 +47,22 @@ namespace MinimalNotepad
             WireEvents();
 
             _allWindows.Add(this);
+
+            // Global clipboard monitor — started once; subsequent windows are no-ops
+            GlobalClipboardMonitor.IsEnabled = _settings.SaveGlobalClipboard;
+            GlobalClipboardMonitor.EnabledChanged += OnGlobalClipboardEnabledChanged;
+        }
+
+        void OnGlobalClipboardEnabledChanged(bool enabled)
+        {
+            _settings.SaveGlobalClipboard = enabled;
+            ConfigLoader.SaveSettings(_settings, _settingsFile);
+        }
+
+        protected override void OnSourceInitialized(EventArgs e)
+        {
+            base.OnSourceInitialized(e);
+            GlobalClipboardMonitor.Start(this);
         }
 
         // ── Window shell ──────────────────────────────────────────────────────
@@ -308,6 +324,7 @@ namespace MinimalNotepad
             _settings.FontSize     = _editor.FontSize;
             ConfigLoader.SaveSettings(_settings, _settingsFile);
             _allWindows.Remove(this);
+            GlobalClipboardMonitor.EnabledChanged -= OnGlobalClipboardEnabledChanged;
         }
 
         // ── Formatting apply + undo ───────────────────────────────────────────
@@ -480,7 +497,7 @@ namespace MinimalNotepad
         // ── Help / Quick Guide window (Ctrl+H) ────────────────────────────────
 
         void ShowHelpWindow() =>
-            HelpWindow.ShowOrActivate(_colorEntries);
+            HelpWindow.ShowOrActivate(_colorEntries, _settings, _settingsFile);
 
         // ── Paste content directly (used by ClipboardHistoryWindow) ──────────
 

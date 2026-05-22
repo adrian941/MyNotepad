@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using MinimalNotepad.Config;
 
@@ -18,13 +19,23 @@ namespace MinimalNotepad
 
         private static HelpWindow? _instance;
 
+        // Stored so BuildContent can wire the checkbox without coupling to NotepadWindow
+        private static AppSettings?  _sharedSettings;
+        private static string?       _sharedSettingsPath;
+
         /// <summary>
         /// Opens the help window, or activates the already-open instance
         /// (even if it was opened from another process / exe instance).
         /// All display data — names, colors, key numbers — come from <paramref name="colorEntries"/>.
         /// </summary>
-        public static void ShowOrActivate(IReadOnlyList<ColorEntry> colorEntries)
+        public static void ShowOrActivate(
+            IReadOnlyList<ColorEntry> colorEntries,
+            AppSettings settings,
+            string settingsPath)
         {
+            _sharedSettings     = settings;
+            _sharedSettingsPath = settingsPath;
+
             // Already open in this process → just bring to front
             if (_instance != null) { _instance.Activate(); return; }
 
@@ -73,9 +84,39 @@ namespace MinimalNotepad
             };
             var root = new StackPanel();
             scroll.Content = root;
-            Content = scroll;
 
             BuildContent(root, colorEntries);
+
+            // ── Global clipboard checkbox footer ──────────────────────────────
+            var cb = new CheckBox
+            {
+                Content   = "Track global clipboard (save all system copies)",
+                IsChecked = GlobalClipboardMonitor.IsEnabled,
+                FontSize  = 11,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0x88, 0x88)),
+                Margin    = new Thickness(22, 0, 22, 14),
+                Cursor    = Cursors.Hand
+            };
+            cb.Checked   += (_, _) => { GlobalClipboardMonitor.IsEnabled = true;  };
+            cb.Unchecked += (_, _) => { GlobalClipboardMonitor.IsEnabled = false; };
+
+            // Keep checkbox in sync if another window changes the setting
+            GlobalClipboardMonitor.EnabledChanged += v => cb.IsChecked = v;
+
+            var footerSep = new Border
+            {
+                Height     = 1,
+                Margin     = new Thickness(22, 6, 22, 6),
+                Background = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0))
+            };
+
+            var outerDock = new DockPanel { LastChildFill = true };
+            DockPanel.SetDock(cb,        Dock.Bottom);
+            DockPanel.SetDock(footerSep, Dock.Bottom);
+            outerDock.Children.Add(cb);
+            outerDock.Children.Add(footerSep);
+            outerDock.Children.Add(scroll);
+            Content = outerDock;
         }
 
         // ── Content builder ───────────────────────────────────────────────────
