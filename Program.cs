@@ -681,9 +681,106 @@ namespace MinimalNotepad
                         editor.Document.Insert(offset, fakeSpace);
                         editor.CaretOffset = offset + fakeSpace.Length;
                     }
+                    else if ((e.Key == Key.Up || e.Key == Key.Down)
+                             && (Keyboard.IsKeyDown(Key.LeftAlt) || Keyboard.IsKeyDown(Key.RightAlt))
+                             && !Keyboard.IsKeyDown(Key.LeftCtrl) && !Keyboard.IsKeyDown(Key.RightCtrl))
+                    {
+                        MoveLines(e.Key == Key.Up);
+                        e.Handled = true;
+                    }
                 };
 
                 window.Content = dock;
+
+                // ── Move lines with Alt+Up / Alt+Down ────────────────────────
+                void MoveLines(bool moveUp)
+                {
+                    var doc      = editor.Document;
+                    int selStart = editor.SelectionStart;
+                    int selLength = editor.SelectionLength;
+
+                    // Determine which lines the selection covers
+                    int startLine = doc.GetLineByOffset(selStart).LineNumber;
+                    int endLine;
+                    if (selLength == 0)
+                    {
+                        endLine = startLine;
+                    }
+                    else
+                    {
+                        var lastSel = doc.GetLineByOffset(selStart + selLength);
+                        // Selection ending exactly at the start of a line → don't include that line
+                        endLine = (lastSel.Offset == selStart + selLength && lastSel.LineNumber > startLine)
+                                  ? lastSel.LineNumber - 1 : lastSel.LineNumber;
+                    }
+
+                    if (moveUp   && startLine == 1)            return;
+                    if (!moveUp  && endLine == doc.LineCount)  return;
+
+                    // The full region: pivot line + block lines
+                    int firstNum = moveUp ? startLine - 1 : startLine;
+                    int lastNum  = moveUp ? endLine       : endLine + 1;
+                    int count    = lastNum - firstNum + 1;
+
+                    var contents   = new string[count];
+                    var delimiters = new string[count];
+                    int regionStart = doc.GetLineByNumber(firstNum).Offset;
+                    int regionEnd   = regionStart;
+
+                    for (int i = 0; i < count; i++)
+                    {
+                        var line      = doc.GetLineByNumber(firstNum + i);
+                        contents[i]   = doc.GetText(line.Offset, line.Length);
+                        delimiters[i] = doc.GetText(line.Offset + line.Length, line.DelimiterLength);
+                        regionEnd     = line.Offset + line.Length + line.DelimiterLength;
+                    }
+
+                    // Rotate only the line contents; delimiters stay in their slot
+                    // → newline structure is always preserved, including the no-newline last line
+                    if (moveUp)
+                    {
+                        // [pivot, b1..bN] → [b1..bN, pivot]
+                        string first = contents[0];
+                        for (int i = 0; i < count - 1; i++) contents[i] = contents[i + 1];
+                        contents[count - 1] = first;
+                    }
+                    else
+                    {
+                        // [b1..bN, pivot] → [pivot, b1..bN]
+                        string last = contents[count - 1];
+                        for (int i = count - 1; i > 0; i--) contents[i] = contents[i - 1];
+                        contents[0] = last;
+                    }
+
+                    // Save caret offset within its line before the replace
+                    var origStart = doc.GetLineByNumber(startLine);
+                    var origEnd   = doc.GetLineByNumber(endLine);
+                    int caretInLine  = selStart - origStart.Offset;
+                    int selEndInLine = selLength > 0 ? (selStart + selLength) - origEnd.Offset : 0;
+
+                    // Single Replace → single undo entry, no grouping needed
+                    var sb = new System.Text.StringBuilder();
+                    for (int i = 0; i < count; i++) sb.Append(contents[i]).Append(delimiters[i]);
+                    doc.Replace(regionStart, regionEnd - regionStart, sb.ToString());
+
+                    // Restore caret / selection at the moved block's new position
+                    int newStartLine = moveUp ? startLine - 1 : startLine + 1;
+                    int newEndLine   = moveUp ? endLine - 1   : endLine + 1;
+                    var newFirst     = doc.GetLineByNumber(newStartLine);
+                    var newLast      = doc.GetLineByNumber(newEndLine);
+
+                    int newCaret = newFirst.Offset + Math.Min(caretInLine, newFirst.Length);
+                    if (selLength == 0)
+                    {
+                        editor.CaretOffset = newCaret;
+                    }
+                    else
+                    {
+                        int newSelEnd = newLast.Offset + Math.Min(selEndInLine, newLast.Length);
+                        editor.Select(newCaret, Math.Max(0, newSelEnd - newCaret));
+                    }
+                    editor.TextArea.Caret.BringCaretToView();
+                }
 
                 window.Closed += (s, e) =>
                 {
