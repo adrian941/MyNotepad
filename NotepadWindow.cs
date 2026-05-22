@@ -87,6 +87,7 @@ namespace MinimalNotepad
         {
             _fmtManager = new FormattingManager(_editor.Document);
             _editor.TextArea.TextView.LineTransformers.Add(new RichTextColorizer(_fmtManager));
+            _editor.TextArea.TextView.ElementGenerators.Add(new NonBreakingHyphenGenerator());
         }
 
         // ── Event wiring ──────────────────────────────────────────────────────
@@ -174,17 +175,6 @@ namespace MinimalNotepad
                 e.Handled = true;
                 int offset = _editor.CaretOffset;
                 _editor.Document.Insert(offset, "\u00A0");
-                _editor.CaretOffset = offset + 1;
-            }
-
-            // Replace hyphen-minus with non-breaking hyphen (U+2011, identical visually)
-            // Prevents word-wrap from splitting sequences like "->", "--", etc.
-            // Key.OemMinus = main keyboard "-";  Key.Subtract = numpad "-"
-            if ((e.Key == Key.OemMinus || e.Key == Key.Subtract) && !ctrl && !alt && !Keyboard.IsKeyDown(Key.LeftShift) && !Keyboard.IsKeyDown(Key.RightShift))
-            {
-                e.Handled = true;
-                int offset = _editor.CaretOffset;
-                _editor.Document.Insert(offset, "\u2011");
                 _editor.CaretOffset = offset + 1;
             }
         }
