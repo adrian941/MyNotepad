@@ -188,6 +188,55 @@ namespace MinimalNotepad.Formatting
             ModifyRange(start, end, f => f.BackColorHex = newColor);
         }
 
+        /// <summary>
+        /// Returns the inline formatting (Bold/Italic/Underline/Strikethrough/ForeColorHex)
+        /// of the character immediately to the left of <paramref name="offset"/>.
+        /// BackColorHex (highlighter) is intentionally excluded — sticky color only inherits
+        /// character style, not background highlight.
+        /// Returns null when offset == 0 or no span covers that position (default style).
+        /// </summary>
+        public TextFormatting? GetInlineFormattingBefore(int offset)
+        {
+            if (offset <= 0) return null;
+            int pos = offset - 1;
+            foreach (var s in _spans)
+            {
+                if (s.IsDeleted || s.IsEmpty) continue;
+                if (s.Start <= pos && s.End > pos)
+                {
+                    var f = s.Format;
+                    // Only worth inheriting if there is something set (ignoring highlighter)
+                    if (!f.Bold && !f.Italic && !f.Underline && !f.Strikethrough && f.ForeColorHex == null)
+                        return null;
+                    return new TextFormatting
+                    {
+                        Bold          = f.Bold,
+                        Italic        = f.Italic,
+                        Underline     = f.Underline,
+                        Strikethrough = f.Strikethrough,
+                        ForeColorHex  = f.ForeColorHex,
+                        // BackColorHex intentionally omitted
+                    };
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Unconditionally applies inline formatting on [start, end) without toggling.
+        /// Used for sticky-style typing — preserves existing BackColorHex.
+        /// </summary>
+        public void ApplyInlineFormatting(int start, int end, TextFormatting style)
+            => ModifyRange(start, end, f =>
+            {
+                f.Bold          = style.Bold;
+                f.Italic        = style.Italic;
+                f.Underline     = style.Underline;
+                f.Strikethrough = style.Strikethrough;
+                f.ForeColorHex  = style.ForeColorHex;
+                // BackColorHex untouched — don't inherit highlighter
+            });
+
         // ── Paste support: apply spans relative to a paste offset ────────────
 
         /// <summary>

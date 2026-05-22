@@ -122,6 +122,7 @@ namespace MinimalNotepad
             _editor.TextArea.Caret.PositionChanged += OnCaretPositionChanged;
             _editor.PreviewMouseWheel += OnPreviewMouseWheel;
             _editor.PreviewKeyDown    += OnPreviewKeyDown;
+            _editor.TextArea.TextEntered += OnTextEntered;
             Closed += OnWindowClosed;
 
             // Show hint title for 3 s, then revert to the normal Ln/Col title
@@ -155,6 +156,28 @@ namespace MinimalNotepad
             var caret = _editor.TextArea.Caret;
             string prefix = string.IsNullOrEmpty(_prefixTitle) ? "" : _prefixTitle + " - ";
             Title = $"{prefix}Minimal Notepad - Ln {caret.Line}, Col {caret.Column - 1}";
+        }
+
+        void OnTextEntered(object? sender, System.Windows.Input.TextCompositionEventArgs e)
+        {
+            ApplyStickyFormatting(_editor.TextArea.Caret.Offset - e.Text.Length, e.Text.Length);
+        }
+
+        /// <summary>
+        /// Inherits Bold/Italic/Underline/Strikethrough/ForeColor from the character
+        /// immediately to the left of <paramref name="insertStart"/> and applies it
+        /// to the <paramref name="insertedLen"/> characters just inserted there.
+        /// Highlighter (BackColor) is intentionally NOT inherited.
+        /// </summary>
+        void ApplyStickyFormatting(int insertStart, int insertedLen)
+        {
+            if (insertStart < 0 || insertedLen <= 0) return;
+
+            var style = _fmtManager.GetInlineFormattingBefore(insertStart);
+            if (style == null) return;
+
+            _fmtManager.ApplyInlineFormatting(insertStart, insertStart + insertedLen, style);
+            _editor.TextArea.TextView.Redraw();
         }
 
         void OnPreviewMouseWheel(object? sender, MouseWheelEventArgs e)
@@ -202,6 +225,7 @@ namespace MinimalNotepad
                 int offset = _editor.CaretOffset;
                 _editor.Document.Insert(offset, "\u00A0");
                 _editor.CaretOffset = offset + 1;
+                ApplyStickyFormatting(offset, 1);
             }
         }
 

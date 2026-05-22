@@ -25,6 +25,8 @@ namespace MinimalNotepad
         private StackPanel    _cardsPanel = null!;
         private bool          _suppressDeactivationClose;
         private HistoryMode   _mode = HistoryMode.App;
+        private bool          _singleLineMode = false;
+        private TextBlock     _lineToggleIcon = null!;
 
         // ── Singleton ─────────────────────────────────────────────────────────
 
@@ -59,6 +61,7 @@ namespace MinimalNotepad
             var state = LoadWindowState();
             Width  = state.Width;
             Height = state.Height;
+            _singleLineMode = state.SingleLine;
             if (state.HasPosition)
             {
                 WindowStartupLocation = WindowStartupLocation.Manual;
@@ -159,7 +162,7 @@ namespace MinimalNotepad
             // Toggle pill: shows current mode, click to switch
             var toggleLabel = new TextBlock
             {
-                Text              = "⇄  Application History",
+                Text              = "⇄  System History",
                 FontSize          = 10.5,
                 FontFamily        = new FontFamily("Segoe UI"),
                 FontWeight        = FontWeights.Normal,
@@ -186,7 +189,7 @@ namespace MinimalNotepad
                 if (_mode == HistoryMode.App)
                 {
                     _mode = HistoryMode.Global;
-                    toggleLabel.Text = "⇄  System History";
+                    toggleLabel.Text = "⇄  Application History";
                     Title = "Clipboard History — System";
                     ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
                     NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
@@ -194,7 +197,7 @@ namespace MinimalNotepad
                 else
                 {
                     _mode = HistoryMode.App;
-                    toggleLabel.Text = "⇄  Application History";
+                    toggleLabel.Text = "⇄  System History";
                     Title = "Clipboard History — Application";
                     NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                     ClipboardHistory.HistoryChanged       += OnHistoryChanged;
@@ -204,6 +207,29 @@ namespace MinimalNotepad
 
             var dot1 = MakeDot();
             var dot2 = MakeDot();
+
+            var dot3 = MakeDot();
+
+            _lineToggleIcon = new TextBlock
+            {
+                Text              = _singleLineMode ? "⊟" : "☰",
+                FontSize          = 13,
+                Cursor            = Cursors.Hand,
+                VerticalAlignment = VerticalAlignment.Center,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xB0, 0xB0, 0xB0)),
+                ToolTip           = _singleLineMode ? "Switch to multi-line view" : "Switch to single-line view"
+            };
+            _lineToggleIcon.MouseEnter += (_, _) =>
+                _lineToggleIcon.Foreground = new SolidColorBrush(Color.FromRgb(0x40, 0x40, 0x40));
+            _lineToggleIcon.MouseLeave += (_, _) =>
+                _lineToggleIcon.Foreground = new SolidColorBrush(Color.FromRgb(0xB0, 0xB0, 0xB0));
+            _lineToggleIcon.MouseLeftButtonUp += (_, _) =>
+            {
+                _singleLineMode = !_singleLineMode;
+                _lineToggleIcon.Text    = _singleLineMode ? "⊟" : "☰";
+                _lineToggleIcon.ToolTip = _singleLineMode ? "Switch to multi-line view" : "Switch to single-line view";
+                RefreshCards();
+            };
 
             var footerRow = new StackPanel
             {
@@ -215,6 +241,8 @@ namespace MinimalNotepad
             footerRow.Children.Add(clearAllLink);
             footerRow.Children.Add(dot2);
             footerRow.Children.Add(togglePill);
+            footerRow.Children.Add(dot3);
+            footerRow.Children.Add(_lineToggleIcon);
 
             // Hide the toggle pill (and its separator dot) when global monitoring is off
             void UpdateToggleVisibility()
@@ -226,7 +254,7 @@ namespace MinimalNotepad
                 if (!show && _mode == HistoryMode.Global)
                 {
                     _mode = HistoryMode.App;
-                    toggleLabel.Text = "⇄  Application History";
+                    toggleLabel.Text = "⇄  System History";
                     Title = "Clipboard History";
                     NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                     ClipboardHistory.HistoryChanged       += OnHistoryChanged;
@@ -262,7 +290,7 @@ namespace MinimalNotepad
 
             Closed += (_, _) =>
             {
-                SaveWindowState(Left, Top, Width, Height);
+                SaveWindowState(Left, Top, Width, Height, _singleLineMode);
                 ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
                 NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                 _instance = null;
@@ -318,29 +346,42 @@ namespace MinimalNotepad
         {
             var spans = RichClipboard.DeserializeSpans(entry.RichJson);
 
-            // ── Preview (clipped at 180px = 2× original) ──────────────────────
-            var previewBlock = BuildFormattedBlock(entry.PlainText, spans, 11);
+            // ── Preview ───────────────────────────────────────────────────────
+            var previewBlock = BuildFormattedBlock(entry.PlainText, spans, 11, _singleLineMode);
 
-            var clipBox = new Border
+            UIElement previewArea;
+            Border?   fadeOverlay  = null;
+            Border?   clipBox      = null;
+
+            if (_singleLineMode)
             {
-                MaxHeight    = 180,
-                ClipToBounds = true,
-                Child        = previewBlock
-            };
-
-            // Gradient fade at the bottom of the clip area — hidden initially
-            var fadeOverlay = new Border
+                // Single-line: no MaxHeight, no fade, no bubble — just one truncated line
+                previewArea = previewBlock;
+            }
+            else
             {
-                Height            = 24,
-                VerticalAlignment = VerticalAlignment.Bottom,
-                IsHitTestVisible  = false,
-                Background        = MakeFade(Colors.White),
-                Visibility        = Visibility.Collapsed   // shown only if content overflows
-            };
+                clipBox = new Border
+                {
+                    MaxHeight    = 180,
+                    ClipToBounds = true,
+                    Child        = previewBlock
+                };
 
-            var previewGrid = new Grid();
-            previewGrid.Children.Add(clipBox);
-            previewGrid.Children.Add(fadeOverlay);
+                // Gradient fade at the bottom of the clip area — hidden initially
+                fadeOverlay = new Border
+                {
+                    Height            = 24,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    IsHitTestVisible  = false,
+                    Background        = MakeFade(Colors.White),
+                    Visibility        = Visibility.Collapsed
+                };
+
+                var previewGrid = new Grid();
+                previewGrid.Children.Add(clipBox);
+                previewGrid.Children.Add(fadeOverlay);
+                previewArea = previewGrid;
+            }
 
             // ── Footer: timestamp left, delete button right ───────────────────
             var timestamp = new TextBlock
@@ -381,7 +422,7 @@ namespace MinimalNotepad
 
             // ── Outer layout: preview + footer ────────────────────────────────
             var outerStack = new StackPanel();
-            outerStack.Children.Add(previewGrid);
+            outerStack.Children.Add(previewArea);
             outerStack.Children.Add(footer);
 
             // ── Card border ───────────────────────────────────────────────────
@@ -410,27 +451,32 @@ namespace MinimalNotepad
 
             card.MouseEnter += (_, _) =>
             {
-                card.Background        = new SolidColorBrush(hoverBgColor);
-                fadeOverlay.Background = MakeFade(hoverBgColor);
+                card.Background = new SolidColorBrush(hoverBgColor);
+                if (fadeOverlay != null)
+                    fadeOverlay.Background = MakeFade(hoverBgColor);
             };
             card.MouseLeave += (_, _) =>
             {
-                card.Background        = Brushes.White;
-                fadeOverlay.Background = MakeFade(Colors.White);
+                card.Background = Brushes.White;
+                if (fadeOverlay != null)
+                    fadeOverlay.Background = MakeFade(Colors.White);
             };
 
             // ── After layout: decide fade + bubble based on actual overflow ─────
-            bool bubbleAttached = false;
-            previewBlock.Loaded += (_, _) =>
+            if (!_singleLineMode && clipBox != null && fadeOverlay != null)
             {
-                bool overflows = previewBlock.ActualHeight > clipBox.MaxHeight;
-                fadeOverlay.Visibility = overflows ? Visibility.Visible : Visibility.Collapsed;
-                if (overflows && !bubbleAttached)
+                bool bubbleAttached = false;
+                previewBlock.Loaded += (_, _) =>
                 {
-                    bubbleAttached = true;
-                    AttachFollowMouseBubble(card, entry, spans);
-                }
-            };
+                    bool overflows = previewBlock.ActualHeight > clipBox.MaxHeight;
+                    fadeOverlay.Visibility = overflows ? Visibility.Visible : Visibility.Collapsed;
+                    if (overflows && !bubbleAttached)
+                    {
+                        bubbleAttached = true;
+                        AttachFollowMouseBubble(card, entry, spans);
+                    }
+                };
+            }
 
             // ── Click → paste ─────────────────────────────────────────────────
             card.MouseLeftButtonUp += (_, _) => PasteEntry(entry, spans);
@@ -478,13 +524,15 @@ namespace MinimalNotepad
         static TextBlock BuildFormattedBlock(
             string text,
             List<FormattingManager.SpanRecord>? spans,
-            double fontSize)
+            double fontSize,
+            bool singleLine = false)
         {
             var tb = new TextBlock
             {
                 FontFamily   = new FontFamily("Segoe UI"),
                 FontSize     = fontSize,
-                TextWrapping = TextWrapping.Wrap,
+                TextWrapping = singleLine ? TextWrapping.NoWrap : TextWrapping.Wrap,
+                TextTrimming = singleLine ? TextTrimming.CharacterEllipsis : TextTrimming.None,
                 Foreground   = new SolidColorBrush(Color.FromRgb(0x1A, 0x1A, 0x1A))
             };
 
@@ -717,7 +765,7 @@ namespace MinimalNotepad
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "MinimalNotepad", "clipboard_window_state.json");
 
-        record ClipboardWindowState(double Left, double Top, double Width, double Height, bool HasPosition);
+        record ClipboardWindowState(double Left, double Top, double Width, double Height, bool HasPosition, bool SingleLine = false);
 
         static ClipboardWindowState LoadWindowState()
         {
@@ -728,22 +776,27 @@ namespace MinimalNotepad
                     var d = JsonSerializer.Deserialize<Dictionary<string, double>>(
                                 File.ReadAllText(WindowStatePath));
                     if (d != null)
-                        return new ClipboardWindowState(d["Left"], d["Top"], d["Width"], d["Height"], true);
+                    {
+                        bool singleLine = d.TryGetValue("SingleLine", out double sl) && sl > 0;
+                        return new ClipboardWindowState(d["Left"], d["Top"], d["Width"], d["Height"], true, singleLine);
+                    }
                 }
             }
             catch { }
             return new ClipboardWindowState(0, 0, 380, 560, false);
         }
 
-        static void SaveWindowState(double left, double top, double width, double height)
+        static void SaveWindowState(double left, double top, double width, double height, bool singleLine = false)
         {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(WindowStatePath)!);
                 var d = new Dictionary<string, double>
-                    { ["Left"] = left, ["Top"] = top, ["Width"] = width, ["Height"] = height };
-                File.WriteAllText(WindowStatePath,
-                    JsonSerializer.Serialize(d));
+                {
+                    ["Left"] = left, ["Top"] = top, ["Width"] = width, ["Height"] = height,
+                    ["SingleLine"] = singleLine ? 1.0 : 0.0
+                };
+                File.WriteAllText(WindowStatePath, JsonSerializer.Serialize(d));
             }
             catch { }
         }

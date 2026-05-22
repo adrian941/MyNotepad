@@ -111,31 +111,69 @@ namespace MinimalNotepad.Formatting
             return (null, null);
         }
 
-            /// <summary>
-            /// Deserializes spans from a previously captured rich JSON payload.
-            /// Returns null on failure or if <paramref name="richJson"/> is null.
-            /// </summary>
-            public static List<FormattingManager.SpanRecord>? DeserializeSpans(string? richJson)
+        /// <summary>
+        /// Deserializes spans from a previously captured rich JSON payload.
+        /// Returns null on failure or if <paramref name="richJson"/> is null.
+        /// </summary>
+        public static List<FormattingManager.SpanRecord>? DeserializeSpans(string? richJson)
+        {
+            if (richJson == null) return null;
+            try
             {
-                if (richJson == null) return null;
-                try
-                {
-                    var clip = JsonSerializer.Deserialize<ClipData>(richJson);
-                    if (clip == null) return null;
-                    return clip.Spans.Select(s =>
-                        new FormattingManager.SpanRecord(
-                            s.Start, s.End,
-                            new TextFormatting
-                            {
-                                Bold          = s.Bold,
-                                Italic        = s.Italic,
-                                Underline     = s.Underline,
-                                Strikethrough = s.Strikethrough,
-                                ForeColorHex  = s.ForeColorHex,
-                                BackColorHex  = s.BackColorHex
-                            })).ToList();
-                }
-                catch { return null; }
+                var clip = JsonSerializer.Deserialize<ClipData>(richJson);
+                if (clip == null) return null;
+                return clip.Spans.Select(s =>
+                    new FormattingManager.SpanRecord(
+                        s.Start, s.End,
+                        new TextFormatting
+                        {
+                            Bold          = s.Bold,
+                            Italic        = s.Italic,
+                            Underline     = s.Underline,
+                            Strikethrough = s.Strikethrough,
+                            ForeColorHex  = s.ForeColorHex,
+                            BackColorHex  = s.BackColorHex
+                        })).ToList();
             }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Trims leading/trailing whitespace (and any spans covering only that whitespace)
+        /// from a (text, richJson) pair. Returns the trimmed text and re-serialized JSON.
+        /// If text is all whitespace, returns ("", null).
+        /// </summary>
+        public static (string TrimmedText, string? TrimmedJson) TrimRich(string text, string? richJson)
+        {
+            int trimStart = text.Length - text.TrimStart().Length;
+            int trimEnd   = text.Length - text.TrimEnd().Length;
+            string trimmed = text.Trim();
+
+            if (trimmed.Length == 0) return ("", null);
+            if (trimStart == 0 && trimEnd == 0) return (text, richJson);  // nothing to do
+
+            if (richJson == null) return (trimmed, null);
+
+            try
+            {
+                var clip = JsonSerializer.Deserialize<ClipData>(richJson);
+                if (clip == null) return (trimmed, null);
+
+                int newLen = trimmed.Length;
+                var shifted = clip.Spans
+                    .Select(s => s with
+                    {
+                        Start = Math.Max(0, s.Start - trimStart),
+                        End   = Math.Min(newLen, s.End - trimStart)
+                    })
+                    .Where(s => s.Start < s.End)   // drop spans fully in trimmed region
+                    .ToList();
+
+                var newJson = JsonSerializer.Serialize(new ClipData(trimmed, shifted));
+                return (trimmed, newJson);
+            }
+            catch { return (trimmed, null); }
+        }
     }
 }
+

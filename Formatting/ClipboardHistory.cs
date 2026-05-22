@@ -72,8 +72,20 @@ namespace MinimalNotepad.Formatting
         {
             if (string.IsNullOrEmpty(plainText)) return;
 
-            // Skip exact duplicate of the most recent entry
-            if (_entries.Count > 0 && _entries[0].PlainText == plainText) return;
+            // Trim leading/trailing whitespace (including styled spaces) before any check
+            (plainText, richJson) = RichClipboard.TrimRich(plainText, richJson);
+            if (string.IsNullOrEmpty(plainText)) return;
+
+            if (_entries.Count > 0 && _entries[0].PlainText == plainText)
+            {
+                // Same plain text — update only if formatting changed
+                if (_entries[0].RichJson == richJson) return;
+
+                _entries[0] = new ClipboardEntry(plainText, richJson, DateTime.Now);
+                Save();
+                HistoryChanged?.Invoke();
+                return;
+            }
 
             _entries.Insert(0, new ClipboardEntry(plainText, richJson, DateTime.Now));
 
