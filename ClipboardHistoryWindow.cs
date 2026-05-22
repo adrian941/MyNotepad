@@ -347,41 +347,36 @@ namespace MinimalNotepad
             var spans = RichClipboard.DeserializeSpans(entry.RichJson);
 
             // ── Preview ───────────────────────────────────────────────────────
+            // single-line mode: NoWrap + Ellipsis per line, but lines still stack
+            // and the card still has MaxHeight + fadeout for too-tall content.
             var previewBlock = BuildFormattedBlock(entry.PlainText, spans, 11, _singleLineMode);
 
             UIElement previewArea;
             Border?   fadeOverlay  = null;
             Border?   clipBox      = null;
 
-            if (_singleLineMode)
+            // Both modes use MaxHeight + fadeout; single-line mode just adds
+            // NoWrap+Ellipsis so long lines truncate instead of wrapping.
+            clipBox = new Border
             {
-                // Single-line: no MaxHeight, no fade, no bubble — just one truncated line
-                previewArea = previewBlock;
-            }
-            else
+                MaxHeight    = 180,
+                ClipToBounds = true,
+                Child        = previewBlock
+            };
+
+            fadeOverlay = new Border
             {
-                clipBox = new Border
-                {
-                    MaxHeight    = 180,
-                    ClipToBounds = true,
-                    Child        = previewBlock
-                };
+                Height            = 24,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                IsHitTestVisible  = false,
+                Background        = MakeFade(Colors.White),
+                Visibility        = Visibility.Collapsed
+            };
 
-                // Gradient fade at the bottom of the clip area — hidden initially
-                fadeOverlay = new Border
-                {
-                    Height            = 24,
-                    VerticalAlignment = VerticalAlignment.Bottom,
-                    IsHitTestVisible  = false,
-                    Background        = MakeFade(Colors.White),
-                    Visibility        = Visibility.Collapsed
-                };
-
-                var previewGrid = new Grid();
-                previewGrid.Children.Add(clipBox);
-                previewGrid.Children.Add(fadeOverlay);
-                previewArea = previewGrid;
-            }
+            var previewGrid = new Grid();
+            previewGrid.Children.Add(clipBox);
+            previewGrid.Children.Add(fadeOverlay);
+            previewArea = previewGrid;
 
             // ── Footer: timestamp left, delete button right ───────────────────
             var timestamp = new TextBlock
@@ -463,18 +458,27 @@ namespace MinimalNotepad
             };
 
             // ── After layout: decide fade + bubble based on actual overflow ─────
-            if (!_singleLineMode && clipBox != null && fadeOverlay != null)
             {
                 bool bubbleAttached = false;
                 previewBlock.Loaded += (_, _) =>
                 {
-                    bool overflows = previewBlock.ActualHeight > clipBox.MaxHeight;
-                    fadeOverlay.Visibility = overflows ? Visibility.Visible : Visibility.Collapsed;
-                    if (overflows && !bubbleAttached)
+                    // Defer until after layout so ActualWidth is valid.
+                    // Using DispatcherPriority.Background ensures we run after
+                    // the full measure/arrange pass completes.
+                    Dispatcher.InvokeAsync(() =>
                     {
-                        bubbleAttached = true;
-                        AttachFollowMouseBubble(card, entry, spans);
-                    }
+                        if (previewBlock.ActualWidth <= 0) return;
+
+                        previewBlock.Measure(new Size(previewBlock.ActualWidth, double.PositiveInfinity));
+                        bool overflows = previewBlock.DesiredSize.Height > clipBox.MaxHeight;
+
+                        fadeOverlay.Visibility = overflows ? Visibility.Visible : Visibility.Collapsed;
+                        if (overflows && !bubbleAttached)
+                        {
+                            bubbleAttached = true;
+                            AttachFollowMouseBubble(card, entry, spans);
+                        }
+                    }, System.Windows.Threading.DispatcherPriority.Background);
                 };
             }
 
