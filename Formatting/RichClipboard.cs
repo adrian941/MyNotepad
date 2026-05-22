@@ -33,10 +33,9 @@ namespace MinimalNotepad.Formatting
 
         /// <summary>
         /// Places the selected text on the clipboard as both plain-text and rich format.
-        /// <paramref name="allSpans"/> is the full document snapshot;
-        /// <paramref name="selectionStart"/> is the start of the selection.
+        /// Returns the serialized JSON payload (can be stored in <see cref="ClipboardHistory"/>).
         /// </summary>
-        public static void Copy(
+        public static string Copy(
             string selectedText,
             IEnumerable<FormattingManager.SpanRecord> allSpans,
             int selectionStart)
@@ -60,6 +59,7 @@ namespace MinimalNotepad.Formatting
             dataObj.SetText(selectedText);          // plain text for any app
             dataObj.SetData(FormatName, json);      // rich payload for MinimalNotepad
             Clipboard.SetDataObject(dataObj);
+            return json;
         }
 
         /// <summary>
@@ -110,5 +110,32 @@ namespace MinimalNotepad.Formatting
 
             return (null, null);
         }
+
+            /// <summary>
+            /// Deserializes spans from a previously captured rich JSON payload.
+            /// Returns null on failure or if <paramref name="richJson"/> is null.
+            /// </summary>
+            public static List<FormattingManager.SpanRecord>? DeserializeSpans(string? richJson)
+            {
+                if (richJson == null) return null;
+                try
+                {
+                    var clip = JsonSerializer.Deserialize<ClipData>(richJson);
+                    if (clip == null) return null;
+                    return clip.Spans.Select(s =>
+                        new FormattingManager.SpanRecord(
+                            s.Start, s.End,
+                            new TextFormatting
+                            {
+                                Bold          = s.Bold,
+                                Italic        = s.Italic,
+                                Underline     = s.Underline,
+                                Strikethrough = s.Strikethrough,
+                                ForeColorHex  = s.ForeColorHex,
+                                BackColorHex  = s.BackColorHex
+                            })).ToList();
+                }
+                catch { return null; }
+            }
     }
 }

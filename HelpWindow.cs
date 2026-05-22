@@ -60,7 +60,7 @@ namespace MinimalNotepad
         {
             Title                 = "Quick Guide";
             Width                 = 490;
-            Height                = 720;
+            Height                = 828;
             ResizeMode            = ResizeMode.CanResize;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Background            = Brushes.White;
@@ -161,6 +161,7 @@ namespace MinimalNotepad
             root.Children.Add(Row(Badge("Ctrl+N"),      Label("New window")));
             root.Children.Add(Row(Badge("Ctrl+S"),      Label("Set window title")));
             root.Children.Add(Row(Badge("Ctrl+H"),      Label("This help window")));
+            root.Children.Add(Row(Badge("Ctrl+Alt+V"),  Label("Clipboard history (last 2000 copies)")));
             root.Children.Add(Row(Badge("Ctrl+±"),      Label("Increase/decrease font size")));
             root.Children.Add(Row(Badge("Ctrl+scroll"), Label("Also increase/decreases font size")));
         }

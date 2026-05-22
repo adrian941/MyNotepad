@@ -156,6 +156,14 @@ namespace MinimalNotepad
             bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
             bool alt  = Keyboard.IsKeyDown(Key.LeftAlt)  || Keyboard.IsKeyDown(Key.RightAlt);
 
+            // Ctrl+Alt+V → clipboard history window
+            if (ctrl && alt && (e.Key == Key.V || (e.Key == Key.System && e.SystemKey == Key.V)))
+            {
+                ClipboardHistoryWindow.ShowOrActivate(this);
+                e.Handled = true;
+                return;
+            }
+
             if (ctrl && !alt)
             {
                 HandleCtrlShortcut(e);
@@ -190,10 +198,11 @@ namespace MinimalNotepad
             {
                 if (_editor.SelectionLength > 0)
                 {
-                    RichClipboard.Copy(
+                    var richJson = RichClipboard.Copy(
                         _editor.SelectedText,
                         _fmtManager.TakeSnapshot(),
                         _editor.SelectionStart);
+                    ClipboardHistory.Push(_editor.SelectedText, richJson);
                     e.Handled = true;
                 }
                 return; // no selection → let AvalonEdit copy line as usual
@@ -204,10 +213,11 @@ namespace MinimalNotepad
             {
                 if (_editor.SelectionLength > 0)
                 {
-                    RichClipboard.Copy(
+                    var richJson = RichClipboard.Copy(
                         _editor.SelectedText,
                         _fmtManager.TakeSnapshot(),
                         _editor.SelectionStart);
+                    ClipboardHistory.Push(_editor.SelectedText, richJson);
                     _editor.Document.Remove(_editor.SelectionStart, _editor.SelectionLength);
                     e.Handled = true;
                 }
@@ -219,24 +229,7 @@ namespace MinimalNotepad
             {
                 var (text, spans) = RichClipboard.Paste();
                 if (text == null) { e.Handled = true; return; }
-
-                int insertPos = _editor.SelectionStart;
-                if (_editor.SelectionLength > 0)
-                    _editor.Document.Remove(insertPos, _editor.SelectionLength);
-
-                _editor.Document.Insert(insertPos, text);
-                _editor.CaretOffset = insertPos + text.Length;
-
-                if (spans != null && spans.Count > 0)
-                {
-                    var before = _fmtManager.TakeSnapshot();
-                    _fmtManager.ApplyRelativeSpans(insertPos, spans);
-                    var after = _fmtManager.TakeSnapshot();
-                    _editor.Document.UndoStack.Push(
-                        new FormattingUndoOperation(_fmtManager, before, after, _editor.TextArea.TextView));
-                    _editor.TextArea.TextView.Redraw();
-                }
-
+                PasteContent(text, spans);
                 e.Handled = true;
                 return;
             }
@@ -488,5 +481,29 @@ namespace MinimalNotepad
 
         void ShowHelpWindow() =>
             HelpWindow.ShowOrActivate(_colorEntries);
+
+        // ── Paste content directly (used by ClipboardHistoryWindow) ──────────
+
+        internal void PasteContent(string text, List<FormattingManager.SpanRecord>? spans)
+        {
+            int insertPos = _editor.SelectionStart;
+            if (_editor.SelectionLength > 0)
+                _editor.Document.Remove(insertPos, _editor.SelectionLength);
+
+            _editor.Document.Insert(insertPos, text);
+            _editor.CaretOffset = insertPos + text.Length;
+
+            if (spans != null && spans.Count > 0)
+            {
+                var before = _fmtManager.TakeSnapshot();
+                _fmtManager.ApplyRelativeSpans(insertPos, spans);
+                var after = _fmtManager.TakeSnapshot();
+                _editor.Document.UndoStack.Push(
+                    new FormattingUndoOperation(_fmtManager, before, after, _editor.TextArea.TextView));
+                _editor.TextArea.TextView.Redraw();
+            }
+
+            _editor.Focus();
+        }
     }
 }

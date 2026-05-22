@@ -20,6 +20,8 @@ namespace MinimalNotepad
             var settings    = ConfigLoader.LoadSettings(settingsFile);
             var colorConfig = ConfigLoader.LoadOrCreateColorConfig(colorsFile);
 
+            MinimalNotepad.Formatting.ClipboardHistory.Load();
+
             var allWindows  = new List<NotepadWindow>();
             var firstWindow = new NotepadWindow(
                 settings, settingsFile, colorConfig.Colors, allWindows);
