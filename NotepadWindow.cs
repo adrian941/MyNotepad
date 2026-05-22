@@ -194,6 +194,14 @@ namespace MinimalNotepad
                 return;
             }
 
+            // ── Help window ───────────────────────────────────────────────────
+            if (e.Key == Key.H)
+            {
+                ShowHelpWindow();
+                e.Handled = true;
+                return;
+            }
+
             // ── New window ────────────────────────────────────────────────────
             if (e.Key == Key.N)
             {
@@ -399,5 +407,17 @@ namespace MinimalNotepad
             Key.D6 => 6, Key.D7 => 7, Key.D8 => 8, Key.D9 => 9, Key.D0 => 0,
             _ => -1
         };
+
+        // ── Help / Quick Guide window (Ctrl+H) ────────────────────────────────
+
+        private HelpWindow? _helpWindow;
+
+        void ShowHelpWindow()
+        {
+            if (_helpWindow != null) { _helpWindow.Activate(); return; }
+            _helpWindow = new HelpWindow(_textColorMap, _highlightColorMap) { Owner = this };
+            _helpWindow.Closed += (_, _) => _helpWindow = null;
+            _helpWindow.Show();
+        }
     }
 }
