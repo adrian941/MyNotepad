@@ -246,6 +246,58 @@ namespace MinimalNotepad
             string? newColor = isSame ? null : targetHex;
             ModifyRange(start, end, f => f.BackColorHex = newColor);
         }
+
+        // ── Snapshot support for undo/redo ────────────────────────────────────
+
+        public record SpanRecord(int Start, int End, TextFormatting Format);
+
+        public List<SpanRecord> TakeSnapshot() =>
+            _spans
+                .Where(s => !s.IsDeleted && !s.IsEmpty)
+                .Select(s => new SpanRecord(s.Start, s.End, s.Format.Clone()))
+                .ToList();
+
+        public void RestoreSnapshot(List<SpanRecord> snapshot, ICSharpCode.AvalonEdit.Rendering.TextView textView)
+        {
+            _spans.Clear();
+            int docLen = _doc.TextLength;
+            foreach (var r in snapshot)
+            {
+                int s = Math.Max(0, Math.Min(r.Start, docLen));
+                int e = Math.Max(s,  Math.Min(r.End,   docLen));
+                if (s >= e) continue;
+                _spans.Add(new FormattingSpan(
+                    MakeAnchor(s, AnchorMovementType.AfterInsertion),
+                    MakeAnchor(e, AnchorMovementType.BeforeInsertion),
+                    r.Format.Clone()));
+            }
+            textView.Redraw();
+        }
+    }
+
+    // ── Formatting undo operation (integrates with AvalonEdit's undo stack) ──
+
+    class FormattingUndoOperation : IUndoableOperation
+    {
+        private readonly FormattingManager _manager;
+        private readonly List<FormattingManager.SpanRecord> _before;
+        private readonly List<FormattingManager.SpanRecord> _after;
+        private readonly ICSharpCode.AvalonEdit.Rendering.TextView _textView;
+
+        public FormattingUndoOperation(
+            FormattingManager manager,
+            List<FormattingManager.SpanRecord> before,
+            List<FormattingManager.SpanRecord> after,
+            ICSharpCode.AvalonEdit.Rendering.TextView textView)
+        {
+            _manager  = manager;
+            _before   = before;
+            _after    = after;
+            _textView = textView;
+        }
+
+        public void Undo() => _manager.RestoreSnapshot(_before, _textView);
+        public void Redo() => _manager.RestoreSnapshot(_after,  _textView);
     }
 
     // ── Colorizer (AvalonEdit rendering transformer) ──────────────────────────
@@ -510,7 +562,15 @@ namespace MinimalNotepad
                     int start = editor.SelectionStart;
                     int len   = editor.SelectionLength;
                     if (len == 0) return;
+
+                    var before = fmtManager.TakeSnapshot();
                     action(start, start + len);
+                    var after = fmtManager.TakeSnapshot();
+
+                    // Push into AvalonEdit's undo stack → Ctrl+Z / Ctrl+Y work seamlessly
+                    editor.Document.UndoStack.Push(
+                        new FormattingUndoOperation(fmtManager, before, after, editor.TextArea.TextView));
+
                     editor.TextArea.TextView.Redraw();
                 }
                 // ─────────────────────────────────────────────────────────────
