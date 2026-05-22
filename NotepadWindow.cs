@@ -104,6 +104,21 @@ namespace MinimalNotepad
             _editor.PreviewMouseWheel += OnPreviewMouseWheel;
             _editor.PreviewKeyDown    += OnPreviewKeyDown;
             Closed += OnWindowClosed;
+
+            // Show hint title for 3 s, then revert to the normal Ln/Col title
+            var hintTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromSeconds(3)
+            };
+            hintTimer.Tick += (_, _) =>
+            {
+                hintTimer.Stop();
+                // Revert to normal title (using current caret position)
+                var caret = _editor.TextArea.Caret;
+                string prefix = string.IsNullOrEmpty(_prefixTitle) ? "" : _prefixTitle + " - ";
+                Title = $"{prefix}Minimal Notepad - Ln {caret.Line}, Col {caret.Column}";
+            };
+            hintTimer.Start();
         }
 
         // ── Event handlers ────────────────────────────────────────────────────
