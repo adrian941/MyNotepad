@@ -63,7 +63,7 @@ namespace MinimalNotepad.Config
             {
                 // ── Text colors (typeId = 1) ── VS Code Light style, easy on the eyes ──
                 new() { KeyNumber = 1, TypeId = 1, ColorHex = "#2E7D32" }, // Green
-                new() { KeyNumber = 2, TypeId = 1, ColorHex = "#C17A00" }, // Amber (dark, readable on white)
+                new() { KeyNumber = 2, TypeId = 1, ColorHex = "#FFFFFF" }, // White
                 new() { KeyNumber = 3, TypeId = 1, ColorHex = "#D32F2F" }, // Red
                 new() { KeyNumber = 4, TypeId = 1, ColorHex = "#1565C0" }, // Blue (deep, not link-like)
                 new() { KeyNumber = 5, TypeId = 1, ColorHex = "#7B22AC" }, // Violet

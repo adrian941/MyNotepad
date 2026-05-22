@@ -181,6 +181,64 @@ namespace MinimalNotepad
 
         void HandleCtrlShortcut(KeyEventArgs e)
         {
+            // ── Clipboard shortcuts ───────────────────────────────────────────
+
+            // Copy: put rich + plain text on clipboard; AvalonEdit won't see it
+            if (e.Key == Key.C)
+            {
+                if (_editor.SelectionLength > 0)
+                {
+                    RichClipboard.Copy(
+                        _editor.SelectedText,
+                        _fmtManager.TakeSnapshot(),
+                        _editor.SelectionStart);
+                    e.Handled = true;
+                }
+                return; // no selection → let AvalonEdit copy line as usual
+            }
+
+            // Cut: copy rich, then remove text (AvalonEdit handles undo for text)
+            if (e.Key == Key.X)
+            {
+                if (_editor.SelectionLength > 0)
+                {
+                    RichClipboard.Copy(
+                        _editor.SelectedText,
+                        _fmtManager.TakeSnapshot(),
+                        _editor.SelectionStart);
+                    _editor.Document.Remove(_editor.SelectionStart, _editor.SelectionLength);
+                    e.Handled = true;
+                }
+                return;
+            }
+
+            // Paste: plain text from any source; rich spans only from MinimalNotepad
+            if (e.Key == Key.V)
+            {
+                var (text, spans) = RichClipboard.Paste();
+                if (text == null) { e.Handled = true; return; }
+
+                int insertPos = _editor.SelectionStart;
+                if (_editor.SelectionLength > 0)
+                    _editor.Document.Remove(insertPos, _editor.SelectionLength);
+
+                _editor.Document.Insert(insertPos, text);
+                _editor.CaretOffset = insertPos + text.Length;
+
+                if (spans != null && spans.Count > 0)
+                {
+                    var before = _fmtManager.TakeSnapshot();
+                    _fmtManager.ApplyRelativeSpans(insertPos, spans);
+                    var after = _fmtManager.TakeSnapshot();
+                    _editor.Document.UndoStack.Push(
+                        new FormattingUndoOperation(_fmtManager, before, after, _editor.TextArea.TextView));
+                    _editor.TextArea.TextView.Redraw();
+                }
+
+                e.Handled = true;
+                return;
+            }
+
             // ── Formatting shortcuts ───────────────────────────────────────────
             if (e.Key == Key.B)  { ApplyFormatting(_fmtManager.ToggleBold);          e.Handled = true; return; }
             if (e.Key == Key.I)  { ApplyFormatting(_fmtManager.ToggleItalic);        e.Handled = true; return; }

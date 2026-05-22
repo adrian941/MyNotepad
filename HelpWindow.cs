@@ -115,7 +115,7 @@ namespace MinimalNotepad
             root.Children.Add(Section("Text Colors  (select text first)"));
 
             var colorWrap = new WrapPanel { Margin = new Thickness(0, 4, 0, 4) };
-            foreach (var (k, name) in new[] { (1,"Green"), (2,"Amber"), (3,"Red"), (4,"Blue"), (5,"Violet") })
+            foreach (var (k, name) in new[] { (1,"Green"), (2,"White"), (3,"Red"), (4,"Blue"), (5,"Violet") })
                 colorWrap.Children.Add(Row(Badge($"Ctrl+{k}"), Dot(TC(k)), Label(name)));
             root.Children.Add(colorWrap);
             root.Children.Add(Note("Same key again → resets to black"));
@@ -191,13 +191,29 @@ namespace MinimalNotepad
         };
 
         // Colored dot (●) for text color swatches
-        static UIElement Dot(string hex) => new TextBlock
+        // Light colors (e.g. white) get an outlined circle so they're visible on white background
+        static UIElement Dot(string hex)
         {
-            Text = "●", FontSize = 13,
-            Foreground = Brush(hex),
-            Margin = new Thickness(0, 0, 5, 0),
-            VerticalAlignment = VerticalAlignment.Center
-        };
+            var color = (Color)ColorConverter.ConvertFromString(hex);
+            bool isLight = color.R + color.G + color.B > 600;
+            if (isLight)
+                return new Border
+                {
+                    Width = 13, Height = 13,
+                    CornerRadius = new CornerRadius(7),
+                    Background = Brush(hex),
+                    BorderBrush = Brush("#999999"), BorderThickness = new Thickness(1),
+                    Margin = new Thickness(0, 0, 5, 0),
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+            return new TextBlock
+            {
+                Text = "●", FontSize = 13,
+                Foreground = Brush(hex),
+                Margin = new Thickness(0, 0, 5, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+        }
 
         // Colored rectangle for highlight swatches
         static UIElement Swatch(string hex) => new Border

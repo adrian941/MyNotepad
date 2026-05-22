@@ -188,6 +188,28 @@ namespace MinimalNotepad.Formatting
             ModifyRange(start, end, f => f.BackColorHex = newColor);
         }
 
+        // ── Paste support: apply spans relative to a paste offset ────────────
+
+        /// <summary>
+        /// Adds formatting spans from a clipboard payload, shifted by <paramref name="pasteOffset"/>.
+        /// Called after the paste text has already been inserted into the document.
+        /// </summary>
+        public void ApplyRelativeSpans(int pasteOffset, List<SpanRecord> relativeSpans)
+        {
+            int docLen = _doc.TextLength;
+            foreach (var r in relativeSpans)
+            {
+                int s = Math.Max(0, Math.Min(pasteOffset + r.Start, docLen));
+                int e = Math.Max(s,  Math.Min(pasteOffset + r.End,   docLen));
+                if (s >= e) continue;
+                _spans.Add(new FormattingSpan(
+                    MakeAnchor(s, AnchorMovementType.AfterInsertion),
+                    MakeAnchor(e, AnchorMovementType.BeforeInsertion),
+                    r.Format.Clone()));
+            }
+            Cleanup();
+        }
+
         // ── Snapshot support for undo/redo ────────────────────────────────────
 
         public record SpanRecord(int Start, int End, TextFormatting Format);
