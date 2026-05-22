@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -7,7 +9,53 @@ namespace MinimalNotepad
 {
     class HelpWindow : Window
     {
-        public HelpWindow(
+        // ── Singleton state (shared across all NotepadWindow instances) ────────
+
+        private static readonly Mutex _crossProcessMutex =
+            new(false, "MinimalNotepad_HelpWindow");
+
+        private static HelpWindow? _instance;
+
+        /// <summary>
+        /// Opens the help window, or activates the already-open instance
+        /// (even if it was opened from another process / exe instance).
+        /// </summary>
+        public static void ShowOrActivate(
+            IReadOnlyDictionary<int, string> textColorMap,
+            IReadOnlyDictionary<int, string> highlightColorMap)
+        {
+            // Already open in this process → just bring to front
+            if (_instance != null) { _instance.Activate(); return; }
+
+            // Try to claim the cross-process mutex (non-blocking)
+            bool acquired;
+            try   { acquired = _crossProcessMutex.WaitOne(0); }
+            catch (AbandonedMutexException) { acquired = true; } // previous process crashed
+
+            if (!acquired)
+            {
+                // Open in another exe instance → find and activate it via Win32
+                var hwnd = FindWindow(null, "Quick Guide");
+                if (hwnd != System.IntPtr.Zero)
+                {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+                }
+                return;
+            }
+
+            _instance = new HelpWindow(textColorMap, highlightColorMap);
+            _instance.Closed += (_, _) =>
+            {
+                _instance = null;
+                try { _crossProcessMutex.ReleaseMutex(); } catch { }
+            };
+            _instance.Show();
+        }
+
+        // ── Constructor ───────────────────────────────────────────────────────
+
+        HelpWindow(
             IReadOnlyDictionary<int, string> textColorMap,
             IReadOnlyDictionary<int, string> highlightColorMap)
         {
@@ -15,8 +63,11 @@ namespace MinimalNotepad
             Width                 = 490;
             Height                = 720;
             ResizeMode            = ResizeMode.CanResize;
-            WindowStartupLocation = WindowStartupLocation.CenterOwner;
+            // CenterScreen: no Owner, so it positions itself independently
+            WindowStartupLocation = WindowStartupLocation.CenterScreen;
             Background            = Brushes.White;
+            // Not owned → never forced on top of unrelated OS windows
+            ShowInTaskbar         = false;
 
             var scroll = new ScrollViewer
             {
@@ -184,5 +235,18 @@ namespace MinimalNotepad
             Margin = new Thickness(0, 2, 0, 0),
             FontStyle = FontStyles.Italic
         };
+
+        // ── Win32 P/Invoke (cross-process singleton) ──────────────────────────
+
+        const int SW_RESTORE = 9;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern System.IntPtr FindWindow(string? lpClassName, string lpWindowName);
+
+        [DllImport("user32.dll")]
+        static extern bool SetForegroundWindow(System.IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        static extern bool ShowWindow(System.IntPtr hWnd, int nCmdShow);
     }
 }

@@ -51,7 +51,7 @@ namespace MinimalNotepad
 
         void InitializeWindow(double offsetX, double offsetY)
         {
-            Title      = "Minimal Notepad";
+            Title      = "Minimal Notepad — Press Ctrl+H for help";
             Width      = _settings.WindowWidth;
             Height     = _settings.WindowHeight;
             Background = Brushes.White;
@@ -410,14 +410,7 @@ namespace MinimalNotepad
 
         // ── Help / Quick Guide window (Ctrl+H) ────────────────────────────────
 
-        private HelpWindow? _helpWindow;
-
-        void ShowHelpWindow()
-        {
-            if (_helpWindow != null) { _helpWindow.Activate(); return; }
-            _helpWindow = new HelpWindow(_textColorMap, _highlightColorMap) { Owner = this };
-            _helpWindow.Closed += (_, _) => _helpWindow = null;
-            _helpWindow.Show();
-        }
+        void ShowHelpWindow() =>
+            HelpWindow.ShowOrActivate(_textColorMap, _highlightColorMap);
     }
 }
