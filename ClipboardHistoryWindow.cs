@@ -35,18 +35,33 @@ namespace MinimalNotepad
         private Border         _filesTab = null!;
         private IntPtr         _externalFocusHwnd = IntPtr.Zero;
         private IntPtr         _ownHwnd = IntPtr.Zero;             // HWND of this ClipboardHistoryWindow
+        private bool           _isPasting = false;                 // guard against rapid-click races
         private WinEventDelegate? _foregroundEventDelegate;  // prevent GC collection
         private IntPtr            _foregroundEventHook = IntPtr.Zero;
 
         // ── Win32 P/Invoke ────────────────────────────────────────────────────
         [DllImport("user32.dll")] static extern bool   SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")] static extern uint   GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-        [DllImport("user32.dll")] static extern void   keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+        [DllImport("user32.dll")] static extern uint   SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
         [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint evMin, uint evMax, IntPtr hmod,
                                                            WinEventDelegate fn, uint pid, uint tid, uint flags);
         [DllImport("user32.dll")] static extern bool   UnhookWinEvent(IntPtr hHook);
         delegate void WinEventDelegate(IntPtr hook, uint evt, IntPtr hwnd,
                                        int obj, int child, uint thread, uint time);
+
+        [StructLayout(LayoutKind.Explicit, Size = 40)]
+        struct INPUT
+        {
+            [FieldOffset( 0)] public uint   type;
+            // KEYBDINPUT fields inside the union (union starts at offset 8 on 64-bit)
+            [FieldOffset( 8)] public ushort wVk;
+            [FieldOffset(10)] public ushort wScan;
+            [FieldOffset(12)] public uint   kbdFlags;
+            [FieldOffset(16)] public uint   kbdTime;
+            [FieldOffset(24)] public IntPtr kbdExtra;
+        }
+        const uint INPUT_KEYBOARD = 1, KEYEVENTF_KEYUP = 2;
+        const ushort VK_CONTROL = 0x11, VK_V = 0x56;
 
         // ── Singleton ─────────────────────────────────────────────────────────
 
@@ -115,6 +130,7 @@ namespace MinimalNotepad
             _mode = HistoryMode.App;
             ClipboardHistory.HistoryChanged += OnHistoryChanged;
             Title = "Clipboard History";
+            Topmost = true;
             UpdateActiveTab();
             RefreshCards();
         }
@@ -127,6 +143,7 @@ namespace MinimalNotepad
             _mode = HistoryMode.Files;
             SavedFileStore.SavedFilesChanged += OnHistoryChanged;
             Title = "Saved Files";
+            Topmost = false;
             UpdateActiveTab();
             RefreshCards();
         }
@@ -149,6 +166,7 @@ namespace MinimalNotepad
             Height = state.Height;
             _singleLineMode = state.SingleLine;
             _mode           = state.ViewMode;
+            Topmost = (_mode != HistoryMode.Files);
             Title = _mode switch
             {
                 HistoryMode.Global => "Clipboard History — System",
@@ -282,6 +300,7 @@ namespace MinimalNotepad
                 _mode = HistoryMode.App;
                 ClipboardHistory.HistoryChanged += OnHistoryChanged;
                 Title = "Clipboard History";
+                Topmost = true;
                 UpdateActiveTab();
                 RefreshCards();
             };
@@ -292,6 +311,7 @@ namespace MinimalNotepad
                 _mode = HistoryMode.Global;
                 NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
                 Title = "Clipboard History — System";
+                Topmost = true;
                 UpdateActiveTab();
                 RefreshCards();
             };
@@ -302,6 +322,7 @@ namespace MinimalNotepad
                 if (_mode == HistoryMode.Global) NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                 _mode = HistoryMode.Files;
                 Title = "Saved Files";
+                Topmost = false;
                 UpdateActiveTab();
                 RefreshCards();
             };
@@ -771,19 +792,35 @@ namespace MinimalNotepad
             return card;
         }
 
-        void PasteEntry(string plainText, List<FormattingManager.SpanRecord>? spans)
+        async void PasteEntry(string plainText, List<FormattingManager.SpanRecord>? spans)
         {
             if (_externalFocusHwnd != IntPtr.Zero)
             {
-                // Paste plain text into the previously focused external application
-                Clipboard.SetText(plainText);
-                SetForegroundWindow(_externalFocusHwnd);
-                System.Threading.Thread.Sleep(80);
-                const byte VK_CONTROL = 0x11, VK_V = 0x56, KEYUP = 0x02;
-                keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
-                keybd_event(VK_V,       0, 0, UIntPtr.Zero);
-                keybd_event(VK_V,       0, KEYUP, UIntPtr.Zero);
-                keybd_event(VK_CONTROL, 0, KEYUP, UIntPtr.Zero);
+                if (_isPasting) return;
+                _isPasting = true;
+                _cardsPanel.IsHitTestVisible = false;   // block all card clicks until done
+                try
+                {
+                    var target = _externalFocusHwnd;
+                    Clipboard.SetText(plainText);
+                    SetForegroundWindow(target);
+                    await Task.Delay(120);  // non-blocking; give target window time to activate
+                    SetForegroundWindow(target);  // ensure still foreground before SendInput
+                    var inputs = new INPUT[]
+                    {
+                        new INPUT { type=INPUT_KEYBOARD, wVk=VK_CONTROL },
+                        new INPUT { type=INPUT_KEYBOARD, wVk=VK_V },
+                        new INPUT { type=INPUT_KEYBOARD, wVk=VK_V,       kbdFlags=KEYEVENTF_KEYUP },
+                        new INPUT { type=INPUT_KEYBOARD, wVk=VK_CONTROL, kbdFlags=KEYEVENTF_KEYUP },
+                    };
+                    SendInput((uint)inputs.Length, inputs, System.Runtime.InteropServices.Marshal.SizeOf<INPUT>());
+                    await Task.Delay(200);  // keep cards disabled long enough to prevent double-fire
+                }
+                finally
+                {
+                    _isPasting = false;
+                    _cardsPanel.IsHitTestVisible = true;
+                }
             }
             else
             {
