@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(findstr /N \"CardBgSaved\\\\|CardBgSavedHover\" ClipboardHistoryWindow.cs)"
+    ]
+  }
+}

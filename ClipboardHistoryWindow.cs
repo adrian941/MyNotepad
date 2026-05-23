@@ -699,7 +699,7 @@ internal class ClipboardHistoryWindow : Window
             Text = $"📄 {entry.FileName}",
             FontSize = 10,
             FontWeight = FontWeights.SemiBold,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32)),
+            Foreground = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x66)),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 5, 6, 0)
         };
@@ -754,7 +754,7 @@ internal class ClipboardHistoryWindow : Window
         {
             Background = normalBg,
             CornerRadius = new CornerRadius(6),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0xC8, 0xE6, 0xC9)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0)),
             BorderThickness = new Thickness(1),
             Margin = new Thickness(0, 0, 0, 8),
             Padding = new Thickness(12, 10, 12, 10),
@@ -876,8 +876,8 @@ internal class ClipboardHistoryWindow : Window
 
     // ── Saved-file card colours ───────────────────────────────────────────
 
-    private static readonly Color CardBgSaved = Color.FromRgb(0xF1, 0xFB, 0xF1);
-    private static readonly Color CardBgSavedHover = Color.FromRgb(0xDC, 0xF5, 0xDC);
+    private static readonly Color CardBgSaved = Colors.White;
+    private static readonly Color CardBgSavedHover = Color.FromRgb(0xEE, 0xF4, 0xFF);
 
     // ── Mode tab helpers ──────────────────────────────────────────────────
 
