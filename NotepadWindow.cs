@@ -401,7 +401,7 @@ namespace MinimalNotepad
 
             var dialog = new Window
             {
-                Title                 = "Modificări nesalvate",
+                Title                 = "Unsaved Changes",
                 Width                 = 340,
                 Height                = 150,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -413,14 +413,14 @@ namespace MinimalNotepad
 
             var msg = new TextBlock
             {
-                Text              = $"\"{_savedFileName}\" are modificări nesalvate.\nVrei să salvezi înainte de a închide?",
+                Text              = $"\"{_savedFileName}\" has unsaved changes.\nDo you want to save before closing?",
                 Margin            = new Thickness(16, 16, 16, 8),
                 TextWrapping      = TextWrapping.Wrap
             };
 
-            var btnSave = new Button { Content = "Salvează",    Width = 90, Margin = new Thickness(0, 0, 8, 0) };
-            var btnDiscard = new Button { Content = "Nu salva", Width = 90, Margin = new Thickness(0, 0, 8, 0) };
-            var btnCancel = new Button  { Content = "Anulează", Width = 90 };
+            var btnSave = new Button { Content = "Save",         Width = 90, Margin = new Thickness(0, 0, 8, 0) };
+            var btnDiscard = new Button { Content = "Don't Save", Width = 90, Margin = new Thickness(0, 0, 8, 0) };
+            var btnCancel = new Button  { Content = "Cancel",     Width = 90 };
 
             var btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(16, 4, 16, 0) };
             btns.Children.Add(btnSave);
@@ -551,7 +551,7 @@ namespace MinimalNotepad
             var oldName = _savedFileName!;
             var dialog = new Window
             {
-                Title                 = "Redenumește fișierul:",
+                Title                 = "Rename File:",
                 Width                 = 320,
                 Height                = 140,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -574,7 +574,7 @@ namespace MinimalNotepad
                 TextWrapping = TextWrapping.Wrap
             };
 
-            var okButton = new Button { Content = "Redenumește", Width = 110 };
+            var okButton = new Button { Content = "Rename", Width = 90 };
 
             void TryRename()
             {
@@ -584,7 +584,7 @@ namespace MinimalNotepad
 
                 if (SavedFileStore.FileExists(newName))
                 {
-                    errorLabel.Text       = $"\"{newName}\" există deja în folderul Saved.";
+                    errorLabel.Text       = $"\"{newName}\" already exists in the Saved folder.";
                     errorLabel.Visibility = Visibility.Visible;
                     return;
                 }
@@ -602,7 +602,7 @@ namespace MinimalNotepad
                 }
                 catch (Exception ex)
                 {
-                    errorLabel.Text       = $"Eroare: {ex.Message}";
+                    errorLabel.Text       = $"Error: {ex.Message}";
                     errorLabel.Visibility = Visibility.Visible;
                 }
             }
@@ -632,7 +632,7 @@ namespace MinimalNotepad
         {
             var dialog = new Window
             {
-                Title                 = "Salvează ca:",
+                Title                 = "Save As:",
                 Width                 = 320,
                 Height                = 145,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -676,7 +676,7 @@ namespace MinimalNotepad
 
                 if (string.IsNullOrEmpty(name))
                 {
-                    errorLabel.Text       = "Numele nu poate fi gol.";
+                    errorLabel.Text       = "Name cannot be empty.";
                     errorLabel.Visibility = Visibility.Visible;
                     return;
                 }
@@ -685,7 +685,7 @@ namespace MinimalNotepad
                 char[] illegal = Path.GetInvalidFileNameChars();
                 if (name.IndexOfAny(illegal) >= 0)
                 {
-                    errorLabel.Text       = "Numele conține caractere invalide.";
+                    errorLabel.Text       = "Name contains invalid characters.";
                     errorLabel.Visibility = Visibility.Visible;
                     return;
                 }
@@ -693,7 +693,7 @@ namespace MinimalNotepad
                 // Block overwrite of a different file (allow overwrite of *own* file)
                 if (name != _savedFileName && SavedFileStore.FileExists(name))
                 {
-                    errorLabel.Text       = $"\"{name}\" exista deja in folderul Saved.";
+                    errorLabel.Text       = $"\"{name}\" already exists in the Saved folder.";
                     errorLabel.Visibility = Visibility.Visible;
                     return;
                 }
