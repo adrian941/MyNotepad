@@ -200,14 +200,13 @@ namespace MinimalNotepad
             root.Children.Add(Section("Window"));
 
             root.Children.Add(Row(Badge("Ctrl+N"),        Label("New window")));
-            root.Children.Add(Row(Badge("Ctrl+T"),        Label("Set window title")));
             root.Children.Add(Row(Badge("Ctrl+S"),        Label("Save file")));
             root.Children.Add(Row(Badge("Ctrl+Shift+S"),  Label("Save file as new name")));
+            root.Children.Add(Row(Badge("Ctrl+R"),        Label("Rename saved file")));
             root.Children.Add(Row(Badge("Ctrl+F"), Badge("Ctrl+O"), Label("Open saved files view")));
             root.Children.Add(Row(Badge("Ctrl+Alt+V"),    Label("Clipboard history (App / System)")));
             root.Children.Add(Row(Badge("Ctrl+H"),        Label("This help window")));
-            root.Children.Add(Row(Badge("Ctrl+±"),        Label("Increase / decrease font size")));
-            root.Children.Add(Row(Badge("Ctrl+scroll"),   Label("Also increase / decrease font size")));
+            root.Children.Add(Row(Badge("Ctrl+±"), Badge("Ctrl+scroll"), Label("Increase / decrease font size")));
         }
 
         // ── UI element factories ──────────────────────────────────────────────

@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
@@ -24,13 +26,20 @@ namespace MinimalNotepad
 
         private NotepadWindow  _targetWindow;
         private StackPanel     _cardsPanel = null!;
-        private bool           _suppressDeactivationClose;
+        private bool           _suppressDeactivationHwndCapture;
         private HistoryMode    _mode = HistoryMode.App;
         private bool           _singleLineMode = false;
         private TextBlock      _lineToggleIcon = null!;
         private Border         _appTab   = null!;
         private Border         _sysTab   = null!;
         private Border         _filesTab = null!;
+        private IntPtr         _externalFocusHwnd = IntPtr.Zero;
+
+        // ── Win32 P/Invoke ────────────────────────────────────────────────────
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern bool   SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern uint   GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll")] static extern void   keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
         // ── Singleton ─────────────────────────────────────────────────────────
 
@@ -39,12 +48,14 @@ namespace MinimalNotepad
             if (_instance != null)
             {
                 _instance._targetWindow = target;
+                _instance.CaptureExternalHwnd();
                 _instance.RefreshCards();
                 _instance.Activate();
                 return;
             }
 
             _instance = new ClipboardHistoryWindow(target);
+            _instance.CaptureExternalHwnd();
             _instance.Show();
         }
 
@@ -53,6 +64,7 @@ namespace MinimalNotepad
             if (_instance != null)
             {
                 _instance._targetWindow = target;
+                _instance.CaptureExternalHwnd();
                 if (_instance._mode == HistoryMode.Files)
                     _instance.SwitchToAppMode();
                 _instance.Activate();
@@ -60,6 +72,7 @@ namespace MinimalNotepad
             }
 
             _instance = new ClipboardHistoryWindow(target);
+            _instance.CaptureExternalHwnd();
             if (_instance._mode == HistoryMode.Files)
                 _instance.SwitchToAppMode();
             _instance.Show();
@@ -78,6 +91,15 @@ namespace MinimalNotepad
             _instance = new ClipboardHistoryWindow(target);
             _instance.SwitchToFilesMode();
             _instance.Show();
+        }
+
+        void CaptureExternalHwnd()
+        {
+            var hwnd = GetForegroundWindow();
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            _externalFocusHwnd = (pid == (uint)System.Diagnostics.Process.GetCurrentProcess().Id)
+                ? IntPtr.Zero   // our own app (NotepadWindow) → use _targetWindow
+                : hwnd;         // external app → paste plain text there
         }
 
         void SwitchToAppMode()
@@ -214,7 +236,7 @@ namespace MinimalNotepad
             var clearAllLink = MakeFooterLink("🗑  Clear all");
             clearAllLink.MouseLeftButtonUp += (_, _) =>
             {
-                _suppressDeactivationClose = true;
+                _suppressDeactivationHwndCapture = true;
                 if (_mode == HistoryMode.Files)
                 {
                     var result = MessageBox.Show(
@@ -222,7 +244,7 @@ namespace MinimalNotepad
                         "Clear Saved Files",
                         MessageBoxButton.YesNo,
                         MessageBoxImage.Question);
-                    _suppressDeactivationClose = false;
+                    _suppressDeactivationHwndCapture = false;
                     if (result == MessageBoxResult.Yes)
                         SavedFileStore.DeleteAll();
                 }
@@ -233,7 +255,7 @@ namespace MinimalNotepad
                         "Clear History",
                         MessageBoxButton.YesNo,
                         MessageBoxImage.Question);
-                    _suppressDeactivationClose = false;
+                    _suppressDeactivationHwndCapture = false;
                     if (result == MessageBoxResult.Yes)
                     {
                         if (_mode == HistoryMode.App) ClipboardHistory.ClearAll();
@@ -390,15 +412,13 @@ namespace MinimalNotepad
 
         void OnDeactivated(object? sender, EventArgs e)
         {
-            if (_suppressDeactivationClose) return;
-
-            Dispatcher.BeginInvoke(new Action(() =>
-            {
-                if (_suppressDeactivationClose) return;
-                foreach (Window w in Application.Current.Windows)
-                    if (w != this && w.IsActive) return;
-                Close();
-            }));
+            if (_suppressDeactivationHwndCapture) return;
+            // Update external hwnd only if the new foreground belongs to another process
+            var hwnd = GetForegroundWindow();
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid != (uint)System.Diagnostics.Process.GetCurrentProcess().Id)
+                _externalFocusHwnd = hwnd;
+            // Never close — window stays open until user closes it explicitly
         }
 
         // ── Card list ─────────────────────────────────────────────────────────
@@ -731,8 +751,23 @@ namespace MinimalNotepad
 
         void PasteEntry(string plainText, List<FormattingManager.SpanRecord>? spans)
         {
-            _targetWindow.Activate();
-            _targetWindow.PasteContent(plainText, spans);
+            if (_externalFocusHwnd != IntPtr.Zero)
+            {
+                // Paste plain text into the previously focused external application
+                Clipboard.SetText(plainText);
+                SetForegroundWindow(_externalFocusHwnd);
+                System.Threading.Thread.Sleep(80);
+                const byte VK_CONTROL = 0x11, VK_V = 0x56, KEYUP = 0x02;
+                keybd_event(VK_CONTROL, 0, 0, UIntPtr.Zero);
+                keybd_event(VK_V,       0, 0, UIntPtr.Zero);
+                keybd_event(VK_V,       0, KEYUP, UIntPtr.Zero);
+                keybd_event(VK_CONTROL, 0, KEYUP, UIntPtr.Zero);
+            }
+            else
+            {
+                _targetWindow.Activate();
+                _targetWindow.PasteContent(plainText, spans);
+            }
         }
 
         void OpenSavedFile(SavedFileEntry entry) =>

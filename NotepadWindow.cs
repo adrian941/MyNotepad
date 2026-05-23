@@ -314,11 +314,11 @@ namespace MinimalNotepad
                 e.Handled = true; return;
             }
 
-            // ── Window title (Ctrl+T) ─────────────────────────────────────────
-            if (e.Key == Key.T)
+            // ── Rename saved file (Ctrl+R) ───────────────────────────────────
+            if (e.Key == Key.R)
             {
                 e.Handled = true;
-                ShowTitleDialog();
+                if (_savedFileName != null) ShowRenameDialog();
                 return;
             }
 
@@ -544,15 +544,16 @@ namespace MinimalNotepad
             _editor.TextArea.Caret.BringCaretToView();
         }
 
-        // ── Window title dialog (Ctrl+S / Ctrl+T) ────────────────────────────
+        // ── Rename saved file dialog (Ctrl+R) ────────────────────────────────
 
-        void ShowTitleDialog()
+        void ShowRenameDialog()
         {
+            var oldName = _savedFileName!;
             var dialog = new Window
             {
-                Title                 = "Introdu titlul:",
-                Width                 = 300,
-                Height                = 120,
+                Title                 = "Redenumește fișierul:",
+                Width                 = 320,
+                Height                = 140,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 ResizeMode            = ResizeMode.NoResize,
                 Owner                 = this,
@@ -560,44 +561,69 @@ namespace MinimalNotepad
                 Background            = Brushes.White
             };
 
-            var stack = new StackPanel
+            var stack = new StackPanel { Margin = new Thickness(12) };
+
+            var textBox = new TextBox { Text = oldName, Margin = new Thickness(0, 0, 0, 8) };
+
+            var errorLabel = new TextBlock
             {
-                Margin              = new Thickness(10),
-                VerticalAlignment   = VerticalAlignment.Center,
-                HorizontalAlignment = HorizontalAlignment.Stretch
+                Foreground  = new SolidColorBrush(Color.FromRgb(0xCC, 0x30, 0x30)),
+                FontSize    = 11,
+                Margin      = new Thickness(0, 0, 0, 6),
+                Visibility  = Visibility.Collapsed,
+                TextWrapping = TextWrapping.Wrap
             };
 
-            var textBox = new TextBox { Text = _prefixTitle, Margin = new Thickness(0, 0, 0, 10) };
+            var okButton = new Button { Content = "Redenumește", Width = 110 };
 
-            var buttonPanel = new StackPanel
+            void TryRename()
             {
-                Orientation         = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
+                var newName = textBox.Text.Trim();
+                if (string.IsNullOrWhiteSpace(newName)) return;
+                if (newName == oldName) { dialog.Close(); return; }
 
-            var okButton = new Button { Content = "OK", Width = 60 };
+                if (SavedFileStore.FileExists(newName))
+                {
+                    errorLabel.Text       = $"\"{newName}\" există deja în folderul Saved.";
+                    errorLabel.Visibility = Visibility.Visible;
+                    return;
+                }
 
-            void ApplyTitle()
-            {
-                _prefixTitle = textBox.Text.Trim();
-                UpdateTitle();
-                dialog.Close();
+                try
+                {
+                    var oldPath = SavedFileStore.GetFilePath(oldName);
+                    var newPath = SavedFileStore.GetFilePath(newName);
+                    System.IO.File.Move(oldPath, newPath);
+                    _savedFileName = newName;
+                    _prefixTitle   = newName;
+                    _isDirty       = false;
+                    UpdateTitle();
+                    dialog.Close();
+                }
+                catch (Exception ex)
+                {
+                    errorLabel.Text       = $"Eroare: {ex.Message}";
+                    errorLabel.Visibility = Visibility.Visible;
+                }
             }
 
-            okButton.Click += (_, _) => ApplyTitle();
-            textBox.PreviewKeyDown += (_, e) =>
+            var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            btnRow.Children.Add(okButton);
+
+            okButton.Click += (_, _) => TryRename();
+            textBox.PreviewKeyDown += (_, ke) =>
             {
-                if      (e.Key == Key.Enter)  { ApplyTitle();    e.Handled = true; }
-                else if (e.Key == Key.Escape) { dialog.Close();  e.Handled = true; }
+                if      (ke.Key == Key.Enter)  { TryRename();     ke.Handled = true; }
+                else if (ke.Key == Key.Escape) { dialog.Close();  ke.Handled = true; }
             };
 
-            buttonPanel.Children.Add(okButton);
             stack.Children.Add(textBox);
-            stack.Children.Add(buttonPanel);
+            stack.Children.Add(errorLabel);
+            stack.Children.Add(btnRow);
             dialog.Content = stack;
 
             dialog.Loaded += (_, _) => { textBox.Focus(); textBox.SelectAll(); };
-            dialog.Show(); // non-modal → nu blochează alte ferestre
+            dialog.Show();
         }
 
         // ── Save-to-file dialogs (Ctrl+S / Ctrl+Shift+S) ─────────────────────
