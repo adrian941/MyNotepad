@@ -87,6 +87,20 @@ namespace MinimalNotepad.Formatting
             catch { }
         }
 
+        public static SavedFileEntry? LoadFromPath(string filePath)
+        {
+            try
+            {
+                var json     = File.ReadAllText(filePath);
+                var dto      = JsonSerializer.Deserialize<SavedFileDto>(json);
+                if (dto == null) return null;
+                var name     = Path.GetFileNameWithoutExtension(filePath);
+                var modified = File.GetLastWriteTime(filePath);
+                return new SavedFileEntry(name, dto.PlainText, dto.RichJson, modified);
+            }
+            catch { return null; }
+        }
+
         /// <summary>Returns all saved files sorted by last-modified descending.</summary>
         public static List<SavedFileEntry> LoadAll()
         {
