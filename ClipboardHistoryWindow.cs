@@ -11,22 +11,28 @@ using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
+using System.Windows.Shapes;
 using MinimalNotepad.Formatting;
 
 namespace MinimalNotepad
 {
     class ClipboardHistoryWindow : Window
     {
-        enum HistoryMode { App, Global }
+        enum HistoryMode     { App, Global }
+        enum SavedFileFilter { All = 0, OnlySaved = 1 }
 
         private static ClipboardHistoryWindow? _instance;
 
-        private NotepadWindow _targetWindow;
-        private StackPanel    _cardsPanel = null!;
-        private bool          _suppressDeactivationClose;
-        private HistoryMode   _mode = HistoryMode.App;
-        private bool          _singleLineMode = false;
-        private TextBlock     _lineToggleIcon = null!;
+        private NotepadWindow  _targetWindow;
+        private StackPanel     _cardsPanel = null!;
+        private bool           _suppressDeactivationClose;
+        private HistoryMode    _mode = HistoryMode.App;
+        private bool           _singleLineMode = false;
+        private TextBlock       _lineToggleIcon  = null!;
+        private SavedFileFilter _savedFileFilter = SavedFileFilter.All;
+        private TextBlock       _filterDot   = null!;
+        private System.Windows.Shapes.Path  _filterIcon  = null!;
+        private SolidColorBrush _filterIconBrush = null!;
 
         // ── Singleton ─────────────────────────────────────────────────────────
 
@@ -61,7 +67,8 @@ namespace MinimalNotepad
             var state = LoadWindowState();
             Width  = state.Width;
             Height = state.Height;
-            _singleLineMode = state.SingleLine;
+            _singleLineMode  = state.SingleLine;
+            _savedFileFilter = state.Filter;
             if (state.HasPosition)
             {
                 WindowStartupLocation = WindowStartupLocation.Manual;
@@ -202,13 +209,15 @@ namespace MinimalNotepad
                     NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                     ClipboardHistory.HistoryChanged       += OnHistoryChanged;
                 }
+                UpdateFilterToggleVisibility();
                 RefreshCards();
             };
 
             var dot1 = MakeDot();
             var dot2 = MakeDot();
-
             var dot3 = MakeDot();
+            var dot4 = MakeDot();
+            _filterDot = dot4;
 
             _lineToggleIcon = new TextBlock
             {
@@ -231,6 +240,41 @@ namespace MinimalNotepad
                 RefreshCards();
             };
 
+            // ── Filter toggle: All / Only Saved / Only Non-Saved (App mode only) ──
+            _filterIconBrush = new SolidColorBrush(FilterIconColor(_savedFileFilter));
+            _filterIcon = new System.Windows.Shapes.Path
+            {
+                Data              = Geometry.Parse("M0,0 L6,0 L9,3 L9,13 L0,13 Z M6,0 L6,3 L9,3"),
+                Stretch           = Stretch.Uniform,
+                Width             = 9,
+                Height            = 11,
+                Fill              = Brushes.Transparent,
+                Stroke            = _filterIconBrush,
+                StrokeThickness   = 1.2,
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor            = Cursors.Hand,
+                ToolTip           = FilterToggleTooltip(_savedFileFilter),
+                Visibility        = _mode == HistoryMode.App ? Visibility.Visible : Visibility.Collapsed
+            };
+            _filterDot.Visibility = _filterIcon.Visibility;
+
+            _filterIcon.MouseEnter += (_, _) =>
+            {
+                var c = _filterIconBrush.Color;
+                _filterIconBrush.Color = Color.FromArgb(0xFF, c.R, c.G, c.B);
+            };
+            _filterIcon.MouseLeave += (_, _) =>
+                _filterIconBrush.Color = FilterIconColor(_savedFileFilter);
+            _filterIcon.MouseLeftButtonUp += (_, _) =>
+            {
+                _savedFileFilter = _savedFileFilter == SavedFileFilter.All
+                    ? SavedFileFilter.OnlySaved
+                    : SavedFileFilter.All;
+                _filterIconBrush.Color  = FilterIconColor(_savedFileFilter);
+                _filterIcon.ToolTip     = FilterToggleTooltip(_savedFileFilter);
+                RefreshCards();
+            };
+
             var footerRow = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -243,12 +287,14 @@ namespace MinimalNotepad
             footerRow.Children.Add(togglePill);
             footerRow.Children.Add(dot3);
             footerRow.Children.Add(_lineToggleIcon);
+            footerRow.Children.Add(_filterDot);
+            footerRow.Children.Add(_filterIcon);
 
             // Hide the toggle pill (and its separator dot) when global monitoring is off
             void UpdateToggleVisibility()
             {
                 bool show = GlobalClipboardMonitor.IsEnabled;
-                dot2.Visibility      = show ? Visibility.Visible : Visibility.Collapsed;
+                dot2.Visibility       = show ? Visibility.Visible : Visibility.Collapsed;
                 togglePill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
                 // If global was just turned off and we're in Global mode, snap back to App
                 if (!show && _mode == HistoryMode.Global)
@@ -258,6 +304,7 @@ namespace MinimalNotepad
                     Title = "Clipboard History";
                     NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                     ClipboardHistory.HistoryChanged       += OnHistoryChanged;
+                    UpdateFilterToggleVisibility();
                     RefreshCards();
                 }
             }
@@ -283,16 +330,18 @@ namespace MinimalNotepad
             RefreshCards();
 
             // Live updates
-            ClipboardHistory.HistoryChanged += OnHistoryChanged;
+            ClipboardHistory.HistoryChanged  += OnHistoryChanged;
+            SavedFileStore.SavedFilesChanged += OnHistoryChanged;
 
             // Close when user clicks outside any Minimal Notepad window
             Deactivated += OnDeactivated;
 
             Closed += (_, _) =>
             {
-                SaveWindowState(Left, Top, Width, Height, _singleLineMode);
+                SaveWindowState(Left, Top, Width, Height, _singleLineMode, _savedFileFilter);
                 ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
                 NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
+                SavedFileStore.SavedFilesChanged      -= OnHistoryChanged;
                 _instance = null;
             };
         }
@@ -320,26 +369,59 @@ namespace MinimalNotepad
         {
             _cardsPanel.Children.Clear();
 
-            var entries = _mode == HistoryMode.App
-                ? ClipboardHistory.Entries
-                : NormalClipboardHistory.Entries;
-
-            if (entries.Count == 0)
+            if (_mode == HistoryMode.Global)
             {
-                _cardsPanel.Children.Add(new TextBlock
+                var entries = NormalClipboardHistory.Entries;
+                if (entries.Count == 0)
                 {
-                    Text                = "No clipboard history yet.",
-                    FontSize            = 12,
-                    Foreground          = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)),
-                    Margin              = new Thickness(0, 20, 0, 0),
-                    TextAlignment       = TextAlignment.Center,
-                    HorizontalAlignment = HorizontalAlignment.Stretch
-                });
+                    ShowEmptyMessage("No clipboard history yet.");
+                    return;
+                }
+                foreach (var entry in entries)
+                    _cardsPanel.Children.Add(BuildCard(entry));
                 return;
             }
 
-            foreach (var entry in entries)
-                _cardsPanel.Children.Add(BuildCard(entry));
+            // ── App mode: interleave clipboard + saved files ───────────────────
+            bool showClip  = _savedFileFilter != SavedFileFilter.OnlySaved;
+            bool showSaved = true;
+
+            var clipEntries = showClip  ? ClipboardHistory.Entries.ToList()  : new();
+            var savedFiles  = showSaved ? SavedFileStore.LoadAll()            : new();
+
+            if (clipEntries.Count == 0 && savedFiles.Count == 0)
+            {
+                var msg = _savedFileFilter == SavedFileFilter.OnlySaved
+                    ? "No saved files yet."
+                    : "No clipboard history yet.";
+                ShowEmptyMessage(msg);
+                return;
+            }
+
+            // Merge and sort descending by time
+            var merged = new List<(DateTime time, UIElement card)>();
+            foreach (var e in clipEntries)
+                merged.Add((e.CopiedAt, BuildCard(e)));
+            foreach (var f in savedFiles)
+                merged.Add((f.LastModified, BuildSavedFileCard(f)));
+
+            merged.Sort((a, b) => b.time.CompareTo(a.time));
+
+            foreach (var (_, card) in merged)
+                _cardsPanel.Children.Add(card);
+        }
+
+        void ShowEmptyMessage(string text)
+        {
+            _cardsPanel.Children.Add(new TextBlock
+            {
+                Text                = text,
+                FontSize            = 12,
+                Foreground          = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)),
+                Margin              = new Thickness(0, 20, 0, 0),
+                TextAlignment       = TextAlignment.Center,
+                HorizontalAlignment = HorizontalAlignment.Stretch
+            });
         }
 
         UIElement BuildCard(ClipboardEntry entry)
@@ -476,22 +558,160 @@ namespace MinimalNotepad
                         if (overflows && !bubbleAttached)
                         {
                             bubbleAttached = true;
-                            AttachFollowMouseBubble(card, entry, spans);
+                            AttachFollowMouseBubble(card, entry.PlainText, spans);
                         }
                     }, System.Windows.Threading.DispatcherPriority.Background);
                 };
             }
 
             // ── Click → paste ─────────────────────────────────────────────────
-            card.MouseLeftButtonUp += (_, _) => PasteEntry(entry, spans);
+            card.MouseLeftButtonUp += (_, _) => PasteEntry(entry.PlainText, spans);
 
             return card;
         }
 
-        void PasteEntry(ClipboardEntry entry, List<FormattingManager.SpanRecord>? spans)
+        UIElement BuildSavedFileCard(SavedFileEntry entry)
+        {
+            var spans = RichClipboard.DeserializeSpans(entry.RichJson);
+
+            var previewBlock = BuildFormattedBlock(entry.PlainText, spans, 11, _singleLineMode);
+
+            var clipBox = new Border
+            {
+                MaxHeight    = 180,
+                ClipToBounds = true,
+                Child        = previewBlock
+            };
+
+            var fadeOverlay = new Border
+            {
+                Height            = 24,
+                VerticalAlignment = VerticalAlignment.Bottom,
+                IsHitTestVisible  = false,
+                Background        = MakeFade(CardBgSaved),
+                Visibility        = Visibility.Collapsed
+            };
+
+            var previewGrid = new Grid();
+            previewGrid.Children.Add(clipBox);
+            previewGrid.Children.Add(fadeOverlay);
+
+            // ── Footer: file name + timestamp left, delete button right ───────
+            var fileLabel = new TextBlock
+            {
+                Text              = $"📄 {entry.FileName}",
+                FontSize          = 10,
+                FontWeight        = FontWeights.SemiBold,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(0, 5, 6, 0)
+            };
+
+            var timestamp = new TextBlock
+            {
+                Text              = entry.LastModified.ToString("d MMM yyyy  H:mm:ss"),
+                FontSize          = 10,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(0, 5, 0, 0)
+            };
+
+            var deleteBtn = new TextBlock
+            {
+                Text              = "✕",
+                FontSize          = 11,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Cursor            = Cursors.Hand,
+                Margin            = new Thickness(8, 5, 0, 0),
+                ToolTip           = "Delete saved file"
+            };
+            deleteBtn.MouseEnter += (_, _) =>
+                deleteBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0x30, 0x30));
+            deleteBtn.MouseLeave += (_, _) =>
+                deleteBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB));
+            deleteBtn.MouseLeftButtonUp += (_, e) =>
+            {
+                e.Handled = true;
+                SavedFileStore.Delete(entry.FileName);
+            };
+
+            var footerLeft = new StackPanel { Orientation = Orientation.Horizontal };
+            footerLeft.Children.Add(fileLabel);
+            footerLeft.Children.Add(timestamp);
+
+            var footer = new DockPanel { LastChildFill = false, Margin = new Thickness(0) };
+            DockPanel.SetDock(deleteBtn,  Dock.Right);
+            DockPanel.SetDock(footerLeft, Dock.Left);
+            footer.Children.Add(deleteBtn);
+            footer.Children.Add(footerLeft);
+
+            var outerStack = new StackPanel();
+            outerStack.Children.Add(previewGrid);
+            outerStack.Children.Add(footer);
+
+            var normalBg = new SolidColorBrush(CardBgSaved);
+            var hoverBg  = new SolidColorBrush(CardBgSavedHover);
+
+            var card = new Border
+            {
+                Background      = normalBg,
+                CornerRadius    = new CornerRadius(6),
+                BorderBrush     = new SolidColorBrush(Color.FromRgb(0xC8, 0xE6, 0xC9)),
+                BorderThickness = new Thickness(1),
+                Margin          = new Thickness(0, 0, 0, 8),
+                Padding         = new Thickness(12, 10, 12, 10),
+                Cursor          = Cursors.Hand,
+                Child           = outerStack,
+                Effect          = new DropShadowEffect
+                {
+                    Color       = Colors.Black,
+                    Opacity     = 0.07,
+                    BlurRadius  = 5,
+                    ShadowDepth = 1,
+                    Direction   = 270
+                }
+            };
+
+            card.MouseEnter += (_, _) =>
+            {
+                card.Background = hoverBg;
+                fadeOverlay.Background = MakeFade(CardBgSavedHover);
+            };
+            card.MouseLeave += (_, _) =>
+            {
+                card.Background = normalBg;
+                fadeOverlay.Background = MakeFade(CardBgSaved);
+            };
+
+            {
+                bool bubbleAttached = false;
+                previewBlock.Loaded += (_, _) =>
+                {
+                    Dispatcher.InvokeAsync(() =>
+                    {
+                        if (previewBlock.ActualWidth <= 0) return;
+                        previewBlock.Measure(new Size(previewBlock.ActualWidth, double.PositiveInfinity));
+                        bool overflows = previewBlock.DesiredSize.Height > clipBox.MaxHeight;
+                        fadeOverlay.Visibility = overflows ? Visibility.Visible : Visibility.Collapsed;
+                        if (overflows && !bubbleAttached)
+                        {
+                            bubbleAttached = true;
+                            AttachFollowMouseBubble(card, entry.PlainText, spans);
+                        }
+                    }, System.Windows.Threading.DispatcherPriority.Background);
+                };
+            }
+
+            card.MouseLeftButtonUp += (_, _) => PasteEntry(entry.PlainText, spans);
+
+            return card;
+        }
+
+        void PasteEntry(string plainText, List<FormattingManager.SpanRecord>? spans)
         {
             _targetWindow.Activate();
-            _targetWindow.PasteContent(entry.PlainText, spans);
+            _targetWindow.PasteContent(plainText, spans);
         }
 
         // ── Footer helpers ────────────────────────────────────────────────────
@@ -522,6 +742,30 @@ namespace MinimalNotepad
             VerticalAlignment = VerticalAlignment.Center,
             Margin            = new Thickness(6, 0, 6, 0)
         };
+
+        // ── Saved-file card colours ───────────────────────────────────────────
+
+        static readonly Color CardBgSaved      = Color.FromRgb(0xF1, 0xFB, 0xF1);
+        static readonly Color CardBgSavedHover = Color.FromRgb(0xDC, 0xF5, 0xDC);
+
+        // ── Filter toggle helpers ─────────────────────────────────────────────
+
+        void UpdateFilterToggleVisibility()
+        {
+            bool show = _mode == HistoryMode.App;
+            _filterDot.Visibility  = show ? Visibility.Visible : Visibility.Collapsed;
+            _filterIcon.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        static Color FilterIconColor(SavedFileFilter filter) =>
+            filter == SavedFileFilter.OnlySaved
+                ? Color.FromRgb(0x86, 0xEF, 0xAC)   // pastel green = only saved
+                : Color.FromRgb(0x9E, 0xC5, 0xFE);  // pastel blue  = all
+
+        static string FilterToggleTooltip(SavedFileFilter filter) =>
+            filter == SavedFileFilter.OnlySaved
+                ? "Showing: saved files only  (click to show all)"
+                : "Showing: all items  (click to show saved files only)";
 
         // ── Rich text helpers ─────────────────────────────────────────────────
 
@@ -616,13 +860,13 @@ namespace MinimalNotepad
 
         static void AttachFollowMouseBubble(
             Border card,
-            ClipboardEntry entry,
+            string plainText,
             List<FormattingManager.SpanRecord>? spans)
         {
             double maxH = SystemParameters.WorkArea.Height * 0.75;
 
             // Content TextBlock — clipped, no scrollbar
-            var content = BuildFormattedBlock(entry.PlainText, spans, 12);
+            var content = BuildFormattedBlock(plainText, spans, 12);
             content.Margin = new Thickness(12, 10, 12, 30); // extra bottom padding for fade
 
             var clipHost = new Border
@@ -765,11 +1009,11 @@ namespace MinimalNotepad
 
         // ── Window state persistence ──────────────────────────────────────────
 
-        static readonly string WindowStatePath = Path.Combine(
+        static readonly string WindowStatePath = System.IO.Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "MinimalNotepad", "clipboard_window_state.json");
 
-        record ClipboardWindowState(double Left, double Top, double Width, double Height, bool HasPosition, bool SingleLine = false);
+        record ClipboardWindowState(double Left, double Top, double Width, double Height, bool HasPosition, bool SingleLine = false, SavedFileFilter Filter = SavedFileFilter.All);
 
         static ClipboardWindowState LoadWindowState()
         {
@@ -782,7 +1026,10 @@ namespace MinimalNotepad
                     if (d != null)
                     {
                         bool singleLine = d.TryGetValue("SingleLine", out double sl) && sl > 0;
-                        return new ClipboardWindowState(d["Left"], d["Top"], d["Width"], d["Height"], true, singleLine);
+                        var  filter     = d.TryGetValue("FilterMode", out double fm)
+                                          ? (SavedFileFilter)(int)fm
+                                          : SavedFileFilter.All;
+                        return new ClipboardWindowState(d["Left"], d["Top"], d["Width"], d["Height"], true, singleLine, filter);
                     }
                 }
             }
@@ -790,15 +1037,21 @@ namespace MinimalNotepad
             return new ClipboardWindowState(0, 0, 380, 560, false);
         }
 
-        static void SaveWindowState(double left, double top, double width, double height, bool singleLine = false)
+        static void SaveWindowState(double left, double top, double width, double height,
+                                    bool singleLine = false,
+                                    SavedFileFilter filter = SavedFileFilter.All)
         {
             try
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(WindowStatePath)!);
+                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(WindowStatePath)!);
                 var d = new Dictionary<string, double>
                 {
-                    ["Left"] = left, ["Top"] = top, ["Width"] = width, ["Height"] = height,
-                    ["SingleLine"] = singleLine ? 1.0 : 0.0
+                    ["Left"]       = left,
+                    ["Top"]        = top,
+                    ["Width"]      = width,
+                    ["Height"]     = height,
+                    ["SingleLine"] = singleLine ? 1.0 : 0.0,
+                    ["FilterMode"] = (double)(int)filter
                 };
                 File.WriteAllText(WindowStatePath, JsonSerializer.Serialize(d));
             }

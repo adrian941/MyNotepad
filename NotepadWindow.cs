@@ -21,8 +21,9 @@ namespace MinimalNotepad
         private readonly IReadOnlyList<ColorEntry>        _colorEntries;
         private readonly List<NotepadWindow>      _allWindows;
 
-        private string     _prefixTitle = "";
-        private TextEditor _editor      = null!;
+        private string     _prefixTitle   = "";
+        private string?    _savedFileName = null;   // null = never saved
+        private TextEditor _editor        = null!;
         private FormattingManager _fmtManager = null!;
 
         public NotepadWindow(
@@ -304,11 +305,23 @@ namespace MinimalNotepad
                 e.Handled = true; return;
             }
 
-            // ── Window title (Ctrl+S or Ctrl+T) ───────────────────────────────
-            if (e.Key == Key.S || e.Key == Key.T)
+            // ── Window title (Ctrl+T) ─────────────────────────────────────────
+            if (e.Key == Key.T)
             {
                 e.Handled = true;
                 ShowTitleDialog();
+                return;
+            }
+
+            // ── Save file (Ctrl+S / Ctrl+Shift+S) ────────────────────────────
+            if (e.Key == Key.S)
+            {
+                bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+                e.Handled = true;
+                if (shift || _savedFileName == null)
+                    ShowSaveFileDialog();
+                else
+                    SaveCurrentFile(_savedFileName);
                 return;
             }
 
@@ -519,6 +532,108 @@ namespace MinimalNotepad
 
             dialog.Loaded += (_, _) => { textBox.Focus(); textBox.SelectAll(); };
             dialog.Show(); // non-modal → nu blochează alte ferestre
+        }
+
+        // ── Save-to-file dialogs (Ctrl+S / Ctrl+Shift+S) ─────────────────────
+
+        void ShowSaveFileDialog()
+        {
+            var dialog = new Window
+            {
+                Title                 = "Salvează ca:",
+                Width                 = 320,
+                Height                = 145,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                ResizeMode            = ResizeMode.NoResize,
+                Owner                 = this,
+                Topmost               = true,
+                Background            = Brushes.White
+            };
+
+            var stack = new StackPanel
+            {
+                Margin            = new Thickness(12),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+
+            var textBox = new TextBox
+            {
+                Text   = _savedFileName ?? "",
+                Margin = new Thickness(0, 0, 0, 6)
+            };
+
+            var errorLabel = new TextBlock
+            {
+                Foreground  = new SolidColorBrush(Color.FromRgb(0xCC, 0x30, 0x30)),
+                FontSize    = 11,
+                Margin      = new Thickness(0, 0, 0, 6),
+                Visibility  = Visibility.Collapsed,
+                TextWrapping = TextWrapping.Wrap
+            };
+
+            var buttonPanel = new StackPanel
+            {
+                Orientation         = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            var okButton = new Button { Content = "OK", Width = 60 };
+
+            void TrySave()
+            {
+                var name = textBox.Text.Trim();
+
+                if (string.IsNullOrEmpty(name))
+                {
+                    errorLabel.Text       = "Numele nu poate fi gol.";
+                    errorLabel.Visibility = Visibility.Visible;
+                    return;
+                }
+
+                // Forbid path-separator and other illegal chars
+                char[] illegal = Path.GetInvalidFileNameChars();
+                if (name.IndexOfAny(illegal) >= 0)
+                {
+                    errorLabel.Text       = "Numele conține caractere invalide.";
+                    errorLabel.Visibility = Visibility.Visible;
+                    return;
+                }
+
+                // Block overwrite of a different file (allow overwrite of *own* file)
+                if (name != _savedFileName && SavedFileStore.FileExists(name))
+                {
+                    errorLabel.Text       = $"\"{name}\" exista deja in folderul Saved.";
+                    errorLabel.Visibility = Visibility.Visible;
+                    return;
+                }
+
+                dialog.Close();
+                _savedFileName = name;
+                SaveCurrentFile(name);
+            }
+
+            okButton.Click += (_, _) => TrySave();
+            textBox.PreviewKeyDown += (_, ke) =>
+            {
+                if      (ke.Key == Key.Enter)  { TrySave();       ke.Handled = true; }
+                else if (ke.Key == Key.Escape) { dialog.Close();  ke.Handled = true; }
+            };
+
+            buttonPanel.Children.Add(okButton);
+            stack.Children.Add(textBox);
+            stack.Children.Add(errorLabel);
+            stack.Children.Add(buttonPanel);
+            dialog.Content = stack;
+
+            dialog.Loaded += (_, _) => { textBox.Focus(); textBox.SelectAll(); };
+            dialog.Show();
+        }
+
+        void SaveCurrentFile(string name)
+        {
+            var text     = _editor.Text;
+            var spans    = _fmtManager.TakeSnapshot();
+            var richJson = RichClipboard.SerializeDocument(text, spans);
+            SavedFileStore.Save(name, text, richJson);
         }
 
         // ── Helper: WPF digit key → int (0-9) ────────────────────────────────

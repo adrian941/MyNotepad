@@ -139,6 +139,23 @@ namespace MinimalNotepad.Formatting
         }
 
         /// <summary>
+        /// Serializes the full document text + spans to the same JSON format used by
+        /// clipboard history, without placing anything on the system clipboard.
+        /// Used by the file-save feature.
+        /// </summary>
+        public static string SerializeDocument(
+            string text,
+            IEnumerable<FormattingManager.SpanRecord> spans)
+        {
+            var dtos = spans.Select(s => new SpanDto(
+                s.Start, s.End,
+                s.Format.Bold, s.Format.Italic,
+                s.Format.Underline, s.Format.Strikethrough,
+                s.Format.ForeColorHex, s.Format.BackColorHex)).ToList();
+            return JsonSerializer.Serialize(new ClipData(text, dtos));
+        }
+
+        /// <summary>
         /// Trims leading/trailing whitespace (and any spans covering only that whitespace)
         /// from a (text, richJson) pair. Returns the trimmed text and re-serialized JSON.
         /// If text is all whitespace, returns ("", null).
