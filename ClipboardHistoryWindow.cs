@@ -150,7 +150,7 @@ internal class ClipboardHistoryWindow : Window
     {
         _targetWindow = target;
 
-        MinWidth = 260;
+        MinWidth = 390;
         MinHeight = 300;
         ResizeMode = ResizeMode.CanResize;
         Background = new SolidColorBrush(Color.FromRgb(0xF3, 0xF3, 0xF3));
