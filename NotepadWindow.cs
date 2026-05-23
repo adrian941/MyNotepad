@@ -23,6 +23,8 @@ namespace MinimalNotepad
 
         private string     _prefixTitle   = "";
         private string?    _savedFileName = null;   // null = never saved
+
+        public string? SavedFileName => _savedFileName;
         private TextEditor _editor        = null!;
         private FormattingManager _fmtManager = null!;
 
@@ -634,6 +636,55 @@ namespace MinimalNotepad
             var spans    = _fmtManager.TakeSnapshot();
             var richJson = RichClipboard.SerializeDocument(text, spans);
             SavedFileStore.Save(name, text, richJson);
+        }
+
+        // ── Open a saved file (used by ClipboardHistoryWindow) ────────────────
+
+        /// <summary>
+        /// Loads the saved file content into this window (replaces entire document).
+        /// </summary>
+        internal void LoadSavedFile(SavedFileEntry entry)
+        {
+            _savedFileName        = entry.FileName;
+            _editor.Document.Text = entry.PlainText;
+
+            var spans = RichClipboard.DeserializeSpans(entry.RichJson);
+            if (spans != null && spans.Count > 0)
+            {
+                _fmtManager.ApplyRelativeSpans(0, spans);
+                _editor.TextArea.TextView.Redraw();
+            }
+
+            _editor.CaretOffset = 0;
+            _editor.Focus();
+        }
+
+        /// <summary>
+        /// If a NotepadWindow already has this file open, activates it.
+        /// Otherwise opens a new window and loads the file.
+        /// </summary>
+        internal static void OpenOrFocusSavedFile(SavedFileEntry entry, NotepadWindow callerWindow)
+        {
+            foreach (Window w in Application.Current.Windows)
+            {
+                if (w is NotepadWindow nw && nw.SavedFileName == entry.FileName)
+                {
+                    nw.Activate();
+                    nw._editor.Focus();
+                    return;
+                }
+            }
+
+            var newWin = new NotepadWindow(
+                callerWindow._settings,
+                callerWindow._settingsFile,
+                callerWindow._colorEntries,
+                callerWindow._allWindows,
+                callerWindow.Left + 30,
+                callerWindow.Top + 30);
+            newWin.Show();
+            newWin.LoadSavedFile(entry);
+            newWin.Activate();
         }
 
         // ── Helper: WPF digit key → int (0-9) ────────────────────────────────

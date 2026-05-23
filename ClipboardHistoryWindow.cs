@@ -18,8 +18,7 @@ namespace MinimalNotepad
 {
     class ClipboardHistoryWindow : Window
     {
-        enum HistoryMode     { App, Global }
-        enum SavedFileFilter { All = 0, OnlySaved = 1 }
+        enum HistoryMode { App, Global, Files }
 
         private static ClipboardHistoryWindow? _instance;
 
@@ -28,11 +27,10 @@ namespace MinimalNotepad
         private bool           _suppressDeactivationClose;
         private HistoryMode    _mode = HistoryMode.App;
         private bool           _singleLineMode = false;
-        private TextBlock       _lineToggleIcon  = null!;
-        private SavedFileFilter _savedFileFilter = SavedFileFilter.All;
-        private TextBlock       _filterDot   = null!;
-        private System.Windows.Shapes.Path  _filterIcon  = null!;
-        private SolidColorBrush _filterIconBrush = null!;
+        private TextBlock      _lineToggleIcon = null!;
+        private Border         _appTab   = null!;
+        private Border         _sysTab   = null!;
+        private Border         _filesTab = null!;
 
         // ── Singleton ─────────────────────────────────────────────────────────
 
@@ -56,7 +54,6 @@ namespace MinimalNotepad
         {
             _targetWindow = target;
 
-            Title     = "Clipboard History";
             MinWidth  = 260;
             MinHeight = 300;
             ResizeMode            = ResizeMode.CanResize;
@@ -67,8 +64,14 @@ namespace MinimalNotepad
             var state = LoadWindowState();
             Width  = state.Width;
             Height = state.Height;
-            _singleLineMode  = state.SingleLine;
-            _savedFileFilter = state.Filter;
+            _singleLineMode = state.SingleLine;
+            _mode           = state.ViewMode;
+            Title = _mode switch
+            {
+                HistoryMode.Global => "Clipboard History — System",
+                HistoryMode.Files  => "Saved Files",
+                _                  => "Clipboard History"
+            };
             if (state.HasPosition)
             {
                 WindowStartupLocation = WindowStartupLocation.Manual;
@@ -138,12 +141,16 @@ namespace MinimalNotepad
             _cardsPanel = new StackPanel();
             scroll.Content = _cardsPanel;
 
-            // ── Footer: open folder  ·  clear all  ·  toggle mode ────────────
+            // ── Footer: open folder · clear all · [App][System][Files] · ☰ ────
             var openFolderLink = MakeFooterLink("📂  Open history folder");
             openFolderLink.MouseLeftButtonUp += (_, _) =>
             {
-                var dir = System.IO.Path.GetDirectoryName(
-                    _mode == HistoryMode.App ? ClipboardHistory.SavePath : NormalClipboardHistory.SavePath)!;
+                string dir = _mode == HistoryMode.Files
+                    ? SavedFileStore.SavedFolder
+                    : System.IO.Path.GetDirectoryName(
+                        _mode == HistoryMode.App
+                            ? ClipboardHistory.SavePath
+                            : NormalClipboardHistory.SavePath)!;
                 if (System.IO.Directory.Exists(dir))
                     System.Diagnostics.Process.Start("explorer.exe", dir);
             };
@@ -152,72 +159,84 @@ namespace MinimalNotepad
             clearAllLink.MouseLeftButtonUp += (_, _) =>
             {
                 _suppressDeactivationClose = true;
-                var result = MessageBox.Show(
-                    "Are you sure you want to clear the entire clipboard history?",
-                    "Clear History",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question);
-                _suppressDeactivationClose = false;
-                if (result == MessageBoxResult.Yes)
+                if (_mode == HistoryMode.Files)
                 {
-                    if (_mode == HistoryMode.App) ClipboardHistory.ClearAll();
-                    else                          NormalClipboardHistory.ClearAll();
+                    var result = MessageBox.Show(
+                        "Delete all saved files?",
+                        "Clear Saved Files",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Question);
+                    _suppressDeactivationClose = false;
+                    if (result == MessageBoxResult.Yes)
+                        SavedFileStore.DeleteAll();
+                }
+                else
+                {
+                    var result = MessageBox.Show(
+                        "Are you sure you want to clear the entire clipboard history?",
+                        "Clear History",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Question);
+                    _suppressDeactivationClose = false;
+                    if (result == MessageBoxResult.Yes)
+                    {
+                        if (_mode == HistoryMode.App) ClipboardHistory.ClearAll();
+                        else                          NormalClipboardHistory.ClearAll();
+                    }
                 }
                 Activate();
             };
 
-            // Toggle pill: shows current mode, click to switch
-            var toggleLabel = new TextBlock
+            // ── Mode tab buttons ───────────────────────────────────────────────
+            _appTab   = MakeTabButton("App",    Color.FromRgb(0x44, 0x72, 0xC4));
+            _sysTab   = MakeTabButton("System", Color.FromRgb(0x71, 0x53, 0xC4));
+            _filesTab = MakeTabButton("Files",  Color.FromRgb(0x2E, 0x7D, 0x32));
+
+            _appTab.MouseLeftButtonUp += (_, _) =>
             {
-                Text              = "⇄  System History",
-                FontSize          = 10.5,
-                FontFamily        = new FontFamily("Segoe UI"),
-                FontWeight        = FontWeights.Normal,
-                Foreground        = new SolidColorBrush(Color.FromRgb(0x44, 0x72, 0xC4)),
-                VerticalAlignment = VerticalAlignment.Center,
-                Margin            = new Thickness(6, 0, 6, 0)
-            };
-            var togglePill = new Border
-            {
-                Background      = new SolidColorBrush(Color.FromArgb(0x18, 0x44, 0x72, 0xC4)),
-                BorderBrush     = new SolidColorBrush(Color.FromArgb(0x55, 0x44, 0x72, 0xC4)),
-                BorderThickness = new Thickness(1),
-                CornerRadius    = new CornerRadius(10),
-                Padding         = new Thickness(0, 2, 0, 2),
-                Cursor          = Cursors.Hand,
-                Child           = toggleLabel
-            };
-            togglePill.MouseEnter += (_, _) =>
-                togglePill.Background = new SolidColorBrush(Color.FromArgb(0x30, 0x44, 0x72, 0xC4));
-            togglePill.MouseLeave += (_, _) =>
-                togglePill.Background = new SolidColorBrush(Color.FromArgb(0x18, 0x44, 0x72, 0xC4));
-            togglePill.MouseLeftButtonUp += (_, _) =>
-            {
-                if (_mode == HistoryMode.App)
-                {
-                    _mode = HistoryMode.Global;
-                    toggleLabel.Text = "⇄  Application History";
-                    Title = "Clipboard History — System";
-                    ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
-                    NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
-                }
-                else
-                {
-                    _mode = HistoryMode.App;
-                    toggleLabel.Text = "⇄  System History";
-                    Title = "Clipboard History — Application";
-                    NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
-                    ClipboardHistory.HistoryChanged       += OnHistoryChanged;
-                }
-                UpdateFilterToggleVisibility();
+                if (_mode == HistoryMode.App) return;
+                if (_mode == HistoryMode.Global) NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
+                _mode = HistoryMode.App;
+                ClipboardHistory.HistoryChanged += OnHistoryChanged;
+                Title = "Clipboard History";
+                UpdateActiveTab();
                 RefreshCards();
             };
+            _sysTab.MouseLeftButtonUp += (_, _) =>
+            {
+                if (_mode == HistoryMode.Global) return;
+                if (_mode == HistoryMode.App) ClipboardHistory.HistoryChanged -= OnHistoryChanged;
+                _mode = HistoryMode.Global;
+                NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
+                Title = "Clipboard History — System";
+                UpdateActiveTab();
+                RefreshCards();
+            };
+            _filesTab.MouseLeftButtonUp += (_, _) =>
+            {
+                if (_mode == HistoryMode.Files) return;
+                if (_mode == HistoryMode.App)    ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
+                if (_mode == HistoryMode.Global) NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
+                _mode = HistoryMode.Files;
+                Title = "Saved Files";
+                UpdateActiveTab();
+                RefreshCards();
+            };
+
+            UpdateActiveTab();
+
+            var tabRow = new StackPanel
+            {
+                Orientation       = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            tabRow.Children.Add(_appTab);
+            tabRow.Children.Add(_sysTab);
+            tabRow.Children.Add(_filesTab);
 
             var dot1 = MakeDot();
             var dot2 = MakeDot();
             var dot3 = MakeDot();
-            var dot4 = MakeDot();
-            _filterDot = dot4;
 
             _lineToggleIcon = new TextBlock
             {
@@ -240,41 +259,6 @@ namespace MinimalNotepad
                 RefreshCards();
             };
 
-            // ── Filter toggle: All / Only Saved / Only Non-Saved (App mode only) ──
-            _filterIconBrush = new SolidColorBrush(FilterIconColor(_savedFileFilter));
-            _filterIcon = new System.Windows.Shapes.Path
-            {
-                Data              = Geometry.Parse("M0,0 L6,0 L9,3 L9,13 L0,13 Z M6,0 L6,3 L9,3"),
-                Stretch           = Stretch.Uniform,
-                Width             = 9,
-                Height            = 11,
-                Fill              = Brushes.Transparent,
-                Stroke            = _filterIconBrush,
-                StrokeThickness   = 1.2,
-                VerticalAlignment = VerticalAlignment.Center,
-                Cursor            = Cursors.Hand,
-                ToolTip           = FilterToggleTooltip(_savedFileFilter),
-                Visibility        = _mode == HistoryMode.App ? Visibility.Visible : Visibility.Collapsed
-            };
-            _filterDot.Visibility = _filterIcon.Visibility;
-
-            _filterIcon.MouseEnter += (_, _) =>
-            {
-                var c = _filterIconBrush.Color;
-                _filterIconBrush.Color = Color.FromArgb(0xFF, c.R, c.G, c.B);
-            };
-            _filterIcon.MouseLeave += (_, _) =>
-                _filterIconBrush.Color = FilterIconColor(_savedFileFilter);
-            _filterIcon.MouseLeftButtonUp += (_, _) =>
-            {
-                _savedFileFilter = _savedFileFilter == SavedFileFilter.All
-                    ? SavedFileFilter.OnlySaved
-                    : SavedFileFilter.All;
-                _filterIconBrush.Color  = FilterIconColor(_savedFileFilter);
-                _filterIcon.ToolTip     = FilterToggleTooltip(_savedFileFilter);
-                RefreshCards();
-            };
-
             var footerRow = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
@@ -284,27 +268,22 @@ namespace MinimalNotepad
             footerRow.Children.Add(dot1);
             footerRow.Children.Add(clearAllLink);
             footerRow.Children.Add(dot2);
-            footerRow.Children.Add(togglePill);
+            footerRow.Children.Add(tabRow);
             footerRow.Children.Add(dot3);
             footerRow.Children.Add(_lineToggleIcon);
-            footerRow.Children.Add(_filterDot);
-            footerRow.Children.Add(_filterIcon);
 
-            // Hide the toggle pill (and its separator dot) when global monitoring is off
+            // Hide the System tab when global monitoring is off
             void UpdateToggleVisibility()
             {
                 bool show = GlobalClipboardMonitor.IsEnabled;
-                dot2.Visibility       = show ? Visibility.Visible : Visibility.Collapsed;
-                togglePill.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-                // If global was just turned off and we're in Global mode, snap back to App
+                _sysTab.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
                 if (!show && _mode == HistoryMode.Global)
                 {
-                    _mode = HistoryMode.App;
-                    toggleLabel.Text = "⇄  System History";
-                    Title = "Clipboard History";
                     NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
-                    ClipboardHistory.HistoryChanged       += OnHistoryChanged;
-                    UpdateFilterToggleVisibility();
+                    _mode = HistoryMode.App;
+                    ClipboardHistory.HistoryChanged += OnHistoryChanged;
+                    Title = "Clipboard History";
+                    UpdateActiveTab();
                     RefreshCards();
                 }
             }
@@ -329,8 +308,11 @@ namespace MinimalNotepad
 
             RefreshCards();
 
-            // Live updates
-            ClipboardHistory.HistoryChanged  += OnHistoryChanged;
+            // Live updates — subscribe based on active mode at startup
+            if (_mode == HistoryMode.App)
+                ClipboardHistory.HistoryChanged += OnHistoryChanged;
+            else if (_mode == HistoryMode.Global)
+                NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
             SavedFileStore.SavedFilesChanged += OnHistoryChanged;
 
             // Close when user clicks outside any Minimal Notepad window
@@ -338,7 +320,7 @@ namespace MinimalNotepad
 
             Closed += (_, _) =>
             {
-                SaveWindowState(Left, Top, Width, Height, _singleLineMode, _savedFileFilter);
+                SaveWindowState(Left, Top, Width, Height, _singleLineMode, _mode);
                 ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
                 NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
                 SavedFileStore.SavedFilesChanged      -= OnHistoryChanged;
@@ -369,46 +351,29 @@ namespace MinimalNotepad
         {
             _cardsPanel.Children.Clear();
 
+            if (_mode == HistoryMode.Files)
+            {
+                var files = SavedFileStore.LoadAll();
+                if (files.Count == 0) { ShowEmptyMessage("No saved files yet."); return; }
+                foreach (var f in files)
+                    _cardsPanel.Children.Add(BuildSavedFileCard(f));
+                return;
+            }
+
             if (_mode == HistoryMode.Global)
             {
                 var entries = NormalClipboardHistory.Entries;
-                if (entries.Count == 0)
-                {
-                    ShowEmptyMessage("No clipboard history yet.");
-                    return;
-                }
+                if (entries.Count == 0) { ShowEmptyMessage("No clipboard history yet."); return; }
                 foreach (var entry in entries)
                     _cardsPanel.Children.Add(BuildCard(entry));
                 return;
             }
 
-            // ── App mode: interleave clipboard + saved files ───────────────────
-            bool showClip  = _savedFileFilter != SavedFileFilter.OnlySaved;
-            bool showSaved = true;
-
-            var clipEntries = showClip  ? ClipboardHistory.Entries.ToList()  : new();
-            var savedFiles  = showSaved ? SavedFileStore.LoadAll()            : new();
-
-            if (clipEntries.Count == 0 && savedFiles.Count == 0)
-            {
-                var msg = _savedFileFilter == SavedFileFilter.OnlySaved
-                    ? "No saved files yet."
-                    : "No clipboard history yet.";
-                ShowEmptyMessage(msg);
-                return;
-            }
-
-            // Merge and sort descending by time
-            var merged = new List<(DateTime time, UIElement card)>();
+            // App mode
+            var clipEntries = ClipboardHistory.Entries.ToList();
+            if (clipEntries.Count == 0) { ShowEmptyMessage("No clipboard history yet."); return; }
             foreach (var e in clipEntries)
-                merged.Add((e.CopiedAt, BuildCard(e)));
-            foreach (var f in savedFiles)
-                merged.Add((f.LastModified, BuildSavedFileCard(f)));
-
-            merged.Sort((a, b) => b.time.CompareTo(a.time));
-
-            foreach (var (_, card) in merged)
-                _cardsPanel.Children.Add(card);
+                _cardsPanel.Children.Add(BuildCard(e));
         }
 
         void ShowEmptyMessage(string text)
@@ -703,7 +668,7 @@ namespace MinimalNotepad
                 };
             }
 
-            card.MouseLeftButtonUp += (_, _) => PasteEntry(entry.PlainText, spans);
+            card.MouseLeftButtonUp += (_, _) => OpenSavedFile(entry);
 
             return card;
         }
@@ -713,6 +678,9 @@ namespace MinimalNotepad
             _targetWindow.Activate();
             _targetWindow.PasteContent(plainText, spans);
         }
+
+        void OpenSavedFile(SavedFileEntry entry) =>
+            NotepadWindow.OpenOrFocusSavedFile(entry, _targetWindow);
 
         // ── Footer helpers ────────────────────────────────────────────────────
 
@@ -748,24 +716,55 @@ namespace MinimalNotepad
         static readonly Color CardBgSaved      = Color.FromRgb(0xF1, 0xFB, 0xF1);
         static readonly Color CardBgSavedHover = Color.FromRgb(0xDC, 0xF5, 0xDC);
 
-        // ── Filter toggle helpers ─────────────────────────────────────────────
+        // ── Mode tab helpers ──────────────────────────────────────────────────
 
-        void UpdateFilterToggleVisibility()
+        void UpdateActiveTab()
         {
-            bool show = _mode == HistoryMode.App;
-            _filterDot.Visibility  = show ? Visibility.Visible : Visibility.Collapsed;
-            _filterIcon.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            SetTabActive(_appTab,   _mode == HistoryMode.App,    Color.FromRgb(0x44, 0x72, 0xC4));
+            SetTabActive(_sysTab,   _mode == HistoryMode.Global, Color.FromRgb(0x71, 0x53, 0xC4));
+            SetTabActive(_filesTab, _mode == HistoryMode.Files,  Color.FromRgb(0x2E, 0x7D, 0x32));
         }
 
-        static Color FilterIconColor(SavedFileFilter filter) =>
-            filter == SavedFileFilter.OnlySaved
-                ? Color.FromRgb(0x86, 0xEF, 0xAC)   // pastel green = only saved
-                : Color.FromRgb(0x9E, 0xC5, 0xFE);  // pastel blue  = all
+        static void SetTabActive(Border tab, bool active, Color color)
+        {
+            tab.Background  = new SolidColorBrush(active
+                ? Color.FromArgb(0x28, color.R, color.G, color.B)
+                : Color.FromArgb(0x10, 0x88, 0x88, 0x88));
+            tab.BorderBrush = new SolidColorBrush(active
+                ? Color.FromArgb(0x90, color.R, color.G, color.B)
+                : Color.FromArgb(0x30, 0x88, 0x88, 0x88));
+            if (tab.Child is TextBlock tb)
+                tb.Foreground = new SolidColorBrush(active
+                    ? color
+                    : Color.FromRgb(0x99, 0x99, 0x99));
+        }
 
-        static string FilterToggleTooltip(SavedFileFilter filter) =>
-            filter == SavedFileFilter.OnlySaved
-                ? "Showing: saved files only  (click to show all)"
-                : "Showing: all items  (click to show saved files only)";
+        static Border MakeTabButton(string label, Color accentColor)
+        {
+            var tb = new TextBlock
+            {
+                Text              = label,
+                FontSize          = 10.5,
+                FontFamily        = new FontFamily("Segoe UI"),
+                FontWeight        = FontWeights.Normal,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(5, 0, 5, 0)
+            };
+            var border = new Border
+            {
+                Background      = new SolidColorBrush(Color.FromArgb(0x10, 0x88, 0x88, 0x88)),
+                BorderBrush     = new SolidColorBrush(Color.FromArgb(0x30, 0x88, 0x88, 0x88)),
+                BorderThickness = new Thickness(1),
+                CornerRadius    = new CornerRadius(10),
+                Padding         = new Thickness(0, 2, 0, 2),
+                Cursor          = Cursors.Hand,
+                Margin          = new Thickness(2, 0, 2, 0),
+                Child           = tb,
+                Tag             = accentColor
+            };
+            return border;
+        }
 
         // ── Rich text helpers ─────────────────────────────────────────────────
 
@@ -1013,7 +1012,7 @@ namespace MinimalNotepad
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "MinimalNotepad", "clipboard_window_state.json");
 
-        record ClipboardWindowState(double Left, double Top, double Width, double Height, bool HasPosition, bool SingleLine = false, SavedFileFilter Filter = SavedFileFilter.All);
+        record ClipboardWindowState(double Left, double Top, double Width, double Height, bool HasPosition, bool SingleLine = false, HistoryMode ViewMode = HistoryMode.App);
 
         static ClipboardWindowState LoadWindowState()
         {
@@ -1026,10 +1025,10 @@ namespace MinimalNotepad
                     if (d != null)
                     {
                         bool singleLine = d.TryGetValue("SingleLine", out double sl) && sl > 0;
-                        var  filter     = d.TryGetValue("FilterMode", out double fm)
-                                          ? (SavedFileFilter)(int)fm
-                                          : SavedFileFilter.All;
-                        return new ClipboardWindowState(d["Left"], d["Top"], d["Width"], d["Height"], true, singleLine, filter);
+                        var  viewMode   = d.TryGetValue("ViewMode", out double vm)
+                                          ? (HistoryMode)(int)vm
+                                          : HistoryMode.App;
+                        return new ClipboardWindowState(d["Left"], d["Top"], d["Width"], d["Height"], true, singleLine, viewMode);
                     }
                 }
             }
@@ -1039,7 +1038,7 @@ namespace MinimalNotepad
 
         static void SaveWindowState(double left, double top, double width, double height,
                                     bool singleLine = false,
-                                    SavedFileFilter filter = SavedFileFilter.All)
+                                    HistoryMode viewMode = HistoryMode.App)
         {
             try
             {
@@ -1051,7 +1050,7 @@ namespace MinimalNotepad
                     ["Width"]      = width,
                     ["Height"]     = height,
                     ["SingleLine"] = singleLine ? 1.0 : 0.0,
-                    ["FilterMode"] = (double)(int)filter
+                    ["ViewMode"]   = (double)(int)viewMode
                 };
                 File.WriteAllText(WindowStatePath, JsonSerializer.Serialize(d));
             }

@@ -77,6 +77,16 @@ namespace MinimalNotepad.Formatting
             // SavedFilesChanged fires via FileSystemWatcher
         }
 
+        public static void DeleteAll()
+        {
+            try
+            {
+                foreach (var path in Directory.GetFiles(SavedFolder, "*.mnp"))
+                    try { File.Delete(path); } catch { }
+            }
+            catch { }
+        }
+
         /// <summary>Returns all saved files sorted by last-modified descending.</summary>
         public static List<SavedFileEntry> LoadAll()
         {
