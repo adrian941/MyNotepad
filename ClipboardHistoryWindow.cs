@@ -307,7 +307,7 @@ internal class ClipboardHistoryWindow : Window
             _mode = HistoryMode.Global;
             NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
             Title = "Clipboard History — System";
-            Topmost = true;
+            Topmost = false;
             UpdateActiveTab();
             RefreshCards();
         };
