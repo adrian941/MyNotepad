@@ -48,6 +48,62 @@ namespace MinimalNotepad
             _instance.Show();
         }
 
+        public static void ShowOrActivateClipboard(NotepadWindow target)
+        {
+            if (_instance != null)
+            {
+                _instance._targetWindow = target;
+                if (_instance._mode == HistoryMode.Files)
+                    _instance.SwitchToAppMode();
+                _instance.Activate();
+                return;
+            }
+
+            _instance = new ClipboardHistoryWindow(target);
+            if (_instance._mode == HistoryMode.Files)
+                _instance.SwitchToAppMode();
+            _instance.Show();
+        }
+
+        public static void ShowOrActivateFiles(NotepadWindow target)
+        {
+            if (_instance != null)
+            {
+                _instance._targetWindow = target;
+                _instance.SwitchToFilesMode();
+                _instance.Activate();
+                return;
+            }
+
+            _instance = new ClipboardHistoryWindow(target);
+            _instance.SwitchToFilesMode();
+            _instance.Show();
+        }
+
+        void SwitchToAppMode()
+        {
+            if (_mode == HistoryMode.App) return;
+            if (_mode == HistoryMode.Global) NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
+            if (_mode == HistoryMode.Files)  SavedFileStore.SavedFilesChanged       -= OnHistoryChanged;
+            _mode = HistoryMode.App;
+            ClipboardHistory.HistoryChanged += OnHistoryChanged;
+            Title = "Clipboard History";
+            UpdateActiveTab();
+            RefreshCards();
+        }
+
+        void SwitchToFilesMode()
+        {
+            if (_mode == HistoryMode.Files) return;
+            if (_mode == HistoryMode.App)    ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
+            if (_mode == HistoryMode.Global) NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
+            _mode = HistoryMode.Files;
+            SavedFileStore.SavedFilesChanged += OnHistoryChanged;
+            Title = "Saved Files";
+            UpdateActiveTab();
+            RefreshCards();
+        }
+
         // ── Constructor ───────────────────────────────────────────────────────
 
         ClipboardHistoryWindow(NotepadWindow target)

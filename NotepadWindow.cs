@@ -23,6 +23,7 @@ namespace MinimalNotepad
 
         private string     _prefixTitle   = "";
         private string?    _savedFileName = null;   // null = never saved
+        private bool       _isDirty       = false;  // unsaved changes since last save
 
         public string? SavedFileName => _savedFileName;
         private TextEditor _editor        = null!;
@@ -106,7 +107,7 @@ namespace MinimalNotepad
             // Alt briefly captures the focus system.
             var openHistoryCmd = new RoutedCommand();
             CommandBindings.Add(new CommandBinding(openHistoryCmd, (_, _) =>
-                ClipboardHistoryWindow.ShowOrActivate(this)));
+                ClipboardHistoryWindow.ShowOrActivateClipboard(this)));
             InputBindings.Add(new KeyBinding(openHistoryCmd,
                 new KeyGesture(Key.V, ModifierKeys.Control | ModifierKeys.Alt)));
         }
@@ -145,10 +146,7 @@ namespace MinimalNotepad
             hintTimer.Tick += (_, _) =>
             {
                 hintTimer.Stop();
-                // Revert to normal title (using current caret position)
-                var caret = _editor.TextArea.Caret;
-                string prefix = string.IsNullOrEmpty(_prefixTitle) ? "" : _prefixTitle + " - ";
-                Title = $"{prefix}Minimal Notepad - Ln {caret.Line}, Col {caret.Column - 1}";
+                UpdateTitle();
             };
             hintTimer.Start();
         }
@@ -159,15 +157,24 @@ namespace MinimalNotepad
         {
             _editor.TextArea.Caret.BringCaretToView();
 
+            if (_savedFileName != null && !_isDirty)
+            {
+                _isDirty = true;
+                UpdateTitle();
+            }
+
             if (_editor.Text.Length > 80000)
                 _editor.Dispatcher.BeginInvoke(new Action(() => _editor.Clear()));
         }
 
-        void OnCaretPositionChanged(object? sender, EventArgs e)
+        void OnCaretPositionChanged(object? sender, EventArgs e) => UpdateTitle();
+
+        void UpdateTitle()
         {
-            var caret = _editor.TextArea.Caret;
-            string prefix = string.IsNullOrEmpty(_prefixTitle) ? "" : _prefixTitle + " - ";
-            Title = $"{prefix}Minimal Notepad - Ln {caret.Line}, Col {caret.Column - 1}";
+            var caret      = _editor.TextArea.Caret;
+            string dirty   = (_isDirty && _savedFileName != null) ? "*" : "";
+            string file    = string.IsNullOrEmpty(_prefixTitle) ? "" : _prefixTitle + " - ";
+            Title = $"{dirty}{file}Minimal Notepad - Ln {caret.Line}, Col {caret.Column - 1}";
         }
 
         void OnTextEntered(object? sender, System.Windows.Input.TextCompositionEventArgs e)
@@ -207,10 +214,10 @@ namespace MinimalNotepad
             bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
             bool alt  = Keyboard.IsKeyDown(Key.LeftAlt)  || Keyboard.IsKeyDown(Key.RightAlt);
 
-            // Ctrl+Alt+V → clipboard history window
+            // Ctrl+Alt+V → clipboard history (App or Global, never Files)
             if (ctrl && alt && (e.Key == Key.V || (e.Key == Key.System && e.SystemKey == Key.V)))
             {
-                ClipboardHistoryWindow.ShowOrActivate(this);
+                ClipboardHistoryWindow.ShowOrActivateClipboard(this);
                 e.Handled = true;
                 return;
             }
@@ -315,6 +322,14 @@ namespace MinimalNotepad
                 return;
             }
 
+            // ── Open Files view (Ctrl+F / Ctrl+O) ────────────────────────────
+            if (e.Key == Key.F || e.Key == Key.O)
+            {
+                ClipboardHistoryWindow.ShowOrActivateFiles(this);
+                e.Handled = true;
+                return;
+            }
+
             // ── Save file (Ctrl+S / Ctrl+Shift+S) ────────────────────────────
             if (e.Key == Key.S)
             {
@@ -376,6 +391,56 @@ namespace MinimalNotepad
 
             // If this was the last editor window and daemon is off → exit
             Program.TryShutdownIfIdle();
+        }
+
+        protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+        {
+            base.OnClosing(e);
+
+            if (!_isDirty || _savedFileName == null) return;
+
+            var dialog = new Window
+            {
+                Title                 = "Modificări nesalvate",
+                Width                 = 340,
+                Height                = 150,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner                 = this,
+                ResizeMode            = ResizeMode.NoResize,
+                WindowStyle           = WindowStyle.ToolWindow,
+                Background            = new SolidColorBrush(Color.FromRgb(0xF3, 0xF3, 0xF3))
+            };
+
+            var msg = new TextBlock
+            {
+                Text              = $"\"{_savedFileName}\" are modificări nesalvate.\nVrei să salvezi înainte de a închide?",
+                Margin            = new Thickness(16, 16, 16, 8),
+                TextWrapping      = TextWrapping.Wrap
+            };
+
+            var btnSave = new Button { Content = "Salvează",    Width = 90, Margin = new Thickness(0, 0, 8, 0) };
+            var btnDiscard = new Button { Content = "Nu salva", Width = 90, Margin = new Thickness(0, 0, 8, 0) };
+            var btnCancel = new Button  { Content = "Anulează", Width = 90 };
+
+            var btns = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(16, 4, 16, 0) };
+            btns.Children.Add(btnSave);
+            btns.Children.Add(btnDiscard);
+            btns.Children.Add(btnCancel);
+
+            var stack = new StackPanel();
+            stack.Children.Add(msg);
+            stack.Children.Add(btns);
+            dialog.Content = stack;
+
+            bool? result = null;
+            btnSave.Click    += (_, _) => { result = true;  dialog.Close(); };
+            btnDiscard.Click += (_, _) => { result = false; dialog.Close(); };
+            btnCancel.Click  += (_, _) => { result = null;  dialog.Close(); };
+
+            dialog.ShowDialog();
+
+            if (result == null)         { e.Cancel = true; }
+            else if (result == true)    { SaveCurrentFile(_savedFileName); }
         }
 
         // ── Formatting apply + undo ───────────────────────────────────────────
@@ -515,8 +580,7 @@ namespace MinimalNotepad
             void ApplyTitle()
             {
                 _prefixTitle = textBox.Text.Trim();
-                string prefix = string.IsNullOrEmpty(_prefixTitle) ? "" : _prefixTitle + " - ";
-                Title = $"{prefix}Minimal Notepad - Ln {_editor.TextArea.Caret.Line}, Col {_editor.TextArea.Caret.Column - 1}";
+                UpdateTitle();
                 dialog.Close();
             }
 
@@ -636,6 +700,9 @@ namespace MinimalNotepad
             var spans    = _fmtManager.TakeSnapshot();
             var richJson = RichClipboard.SerializeDocument(text, spans);
             SavedFileStore.Save(name, text, richJson);
+            _prefixTitle = name;
+            _isDirty     = false;
+            UpdateTitle();
         }
 
         // ── Open a saved file (used by ClipboardHistoryWindow) ────────────────
@@ -646,7 +713,9 @@ namespace MinimalNotepad
         internal void LoadSavedFile(SavedFileEntry entry)
         {
             _savedFileName        = entry.FileName;
+            _prefixTitle          = entry.FileName;
             _editor.Document.Text = entry.PlainText;
+            _isDirty              = false;
 
             var spans = RichClipboard.DeserializeSpans(entry.RichJson);
             if (spans != null && spans.Count > 0)
@@ -657,6 +726,7 @@ namespace MinimalNotepad
 
             _editor.CaretOffset = 0;
             _editor.Focus();
+            UpdateTitle();
         }
 
         /// <summary>
