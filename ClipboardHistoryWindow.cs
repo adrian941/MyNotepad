@@ -34,12 +34,19 @@ namespace MinimalNotepad
         private Border         _sysTab   = null!;
         private Border         _filesTab = null!;
         private IntPtr         _externalFocusHwnd = IntPtr.Zero;
+        private IntPtr         _ownHwnd = IntPtr.Zero;             // HWND of this ClipboardHistoryWindow
+        private WinEventDelegate? _foregroundEventDelegate;  // prevent GC collection
+        private IntPtr            _foregroundEventHook = IntPtr.Zero;
 
         // ── Win32 P/Invoke ────────────────────────────────────────────────────
-        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] static extern bool   SetForegroundWindow(IntPtr hWnd);
         [DllImport("user32.dll")] static extern uint   GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
         [DllImport("user32.dll")] static extern void   keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+        [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint evMin, uint evMax, IntPtr hmod,
+                                                           WinEventDelegate fn, uint pid, uint tid, uint flags);
+        [DllImport("user32.dll")] static extern bool   UnhookWinEvent(IntPtr hHook);
+        delegate void WinEventDelegate(IntPtr hook, uint evt, IntPtr hwnd,
+                                       int obj, int child, uint thread, uint time);
 
         // ── Singleton ─────────────────────────────────────────────────────────
 
@@ -95,11 +102,9 @@ namespace MinimalNotepad
 
         void CaptureExternalHwnd()
         {
-            var hwnd = GetForegroundWindow();
-            GetWindowThreadProcessId(hwnd, out uint pid);
-            _externalFocusHwnd = (pid == (uint)System.Diagnostics.Process.GetCurrentProcess().Id)
-                ? IntPtr.Zero   // our own app (NotepadWindow) → use _targetWindow
-                : hwnd;         // external app → paste plain text there
+            // Called when user opens history from a NotepadWindow (keyboard shortcut).
+            // Reset so paste goes to _targetWindow, not a stale external window.
+            _externalFocusHwnd = IntPtr.Zero;
         }
 
         void SwitchToAppMode()
@@ -393,11 +398,17 @@ namespace MinimalNotepad
                 NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
             SavedFileStore.SavedFilesChanged += OnHistoryChanged;
 
-            // Close when user clicks outside any Minimal Notepad window
-            Deactivated += OnDeactivated;
+            // Track which external window was last in the foreground
+            _foregroundEventDelegate = OnForegroundWindowChanged;
+            const uint EVENT_SYSTEM_FOREGROUND = 3, WINEVENT_OUTOFCONTEXT = 0;
+            _foregroundEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+                IntPtr.Zero, _foregroundEventDelegate, 0, 0, WINEVENT_OUTOFCONTEXT);
+
+            Loaded += (_, _) => _ownHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
 
             Closed += (_, _) =>
             {
+                if (_foregroundEventHook != IntPtr.Zero) UnhookWinEvent(_foregroundEventHook);
                 SaveWindowState(Left, Top, Width, Height, _singleLineMode, _mode);
                 ClipboardHistory.HistoryChanged       -= OnHistoryChanged;
                 NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
@@ -406,20 +417,31 @@ namespace MinimalNotepad
             };
         }
 
+        // ── Foreground window tracking (for external paste) ───────────────────
+
+        void OnForegroundWindowChanged(IntPtr hook, uint evt, IntPtr hwnd,
+                                       int obj, int child, uint thread, uint time)
+        {
+            if (hwnd == IntPtr.Zero || _suppressDeactivationHwndCapture) return;
+            GetWindowThreadProcessId(hwnd, out uint pid);
+            uint ourPid = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
+            if (pid != ourPid)
+            {
+                // External app focused → remember it for paste
+                _externalFocusHwnd = hwnd;
+            }
+            else if (hwnd != _ownHwnd)
+            {
+                // One of our NotepadWindows got focus → paste should go there, not external
+                _externalFocusHwnd = IntPtr.Zero;
+            }
+            // else: ClipboardHistoryWindow itself got focus → keep _externalFocusHwnd unchanged
+            //        so the next card click pastes to wherever was focused before
+        }
+
         // ── Event handlers ────────────────────────────────────────────────────
 
         void OnHistoryChanged() => RefreshCards();
-
-        void OnDeactivated(object? sender, EventArgs e)
-        {
-            if (_suppressDeactivationHwndCapture) return;
-            // Update external hwnd only if the new foreground belongs to another process
-            var hwnd = GetForegroundWindow();
-            GetWindowThreadProcessId(hwnd, out uint pid);
-            if (pid != (uint)System.Diagnostics.Process.GetCurrentProcess().Id)
-                _externalFocusHwnd = hwnd;
-            // Never close — window stays open until user closes it explicitly
-        }
 
         // ── Card list ─────────────────────────────────────────────────────────
 
