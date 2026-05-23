@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Windows;
 
@@ -62,11 +63,21 @@ namespace MinimalNotepad.Formatting
         public static string GetFilePath(string name) =>
             Path.Combine(SavedFolder, name + ".mnp");
 
+        static readonly JsonSerializerOptions _writeOpts = new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            Encoder       = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+
         public static void Save(string name, string plainText, string? richJson)
         {
             EnsureFolder();
-            var dto  = new SavedFileDto { PlainText = plainText, RichJson = richJson };
-            var json = JsonSerializer.Serialize(dto);
+            var dto = new SavedFileDto
+            {
+                PlainText = plainText,
+                RichData  = richJson != null ? JsonDocument.Parse(richJson).RootElement : null
+            };
+            var json = JsonSerializer.Serialize(dto, _writeOpts);
             File.WriteAllText(GetFilePath(name), json);
             // SavedFilesChanged fires via FileSystemWatcher
         }
@@ -87,16 +98,23 @@ namespace MinimalNotepad.Formatting
             catch { }
         }
 
+        static SavedFileEntry? DtoToEntry(SavedFileDto? dto, string filePath)
+        {
+            if (dto == null) return null;
+            var name     = Path.GetFileNameWithoutExtension(filePath);
+            var modified = File.GetLastWriteTime(filePath);
+            var richJson = dto.RichData?.ValueKind == JsonValueKind.Undefined ? null
+                         : dto.RichData?.GetRawText();
+            return new SavedFileEntry(name, dto.PlainText, richJson, modified);
+        }
+
         public static SavedFileEntry? LoadFromPath(string filePath)
         {
             try
             {
-                var json     = File.ReadAllText(filePath);
-                var dto      = JsonSerializer.Deserialize<SavedFileDto>(json);
-                if (dto == null) return null;
-                var name     = Path.GetFileNameWithoutExtension(filePath);
-                var modified = File.GetLastWriteTime(filePath);
-                return new SavedFileEntry(name, dto.PlainText, dto.RichJson, modified);
+                var json = File.ReadAllText(filePath);
+                var dto  = JsonSerializer.Deserialize<SavedFileDto>(json);
+                return DtoToEntry(dto, filePath);
             }
             catch { return null; }
         }
@@ -112,12 +130,10 @@ namespace MinimalNotepad.Formatting
                 {
                     try
                     {
-                        var json     = File.ReadAllText(path);
-                        var dto      = JsonSerializer.Deserialize<SavedFileDto>(json);
-                        if (dto == null) continue;
-                        var name     = Path.GetFileNameWithoutExtension(path);
-                        var modified = File.GetLastWriteTime(path);
-                        result.Add(new SavedFileEntry(name, dto.PlainText, dto.RichJson, modified));
+                        var json = File.ReadAllText(path);
+                        var dto  = JsonSerializer.Deserialize<SavedFileDto>(json);
+                        var entry = DtoToEntry(dto, path);
+                        if (entry != null) result.Add(entry);
                     }
                     catch { }
                 }
@@ -128,8 +144,8 @@ namespace MinimalNotepad.Formatting
 
         class SavedFileDto
         {
-            public string  PlainText { get; set; } = "";
-            public string? RichJson  { get; set; }
+            public string       PlainText { get; set; } = "";
+            public JsonElement? RichData  { get; set; }
         }
     }
 }
