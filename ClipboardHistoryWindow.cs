@@ -126,7 +126,6 @@ internal class ClipboardHistoryWindow : Window
         _mode = HistoryMode.App;
         ClipboardHistory.HistoryChanged += OnHistoryChanged;
         Title = "Clipboard History";
-        Topmost = false;
         UpdateActiveTab();
         RefreshCards();
     }
@@ -139,7 +138,6 @@ internal class ClipboardHistoryWindow : Window
         _mode = HistoryMode.Files;
         SavedFileStore.SavedFilesChanged += OnHistoryChanged;
         Title = "Saved Files";
-        Topmost = false;
         UpdateActiveTab();
         RefreshCards();
     }
@@ -150,7 +148,7 @@ internal class ClipboardHistoryWindow : Window
     {
         _targetWindow = target;
 
-        MinWidth = 390;
+        MinWidth = 385;
         MinHeight = 300;
         ResizeMode = ResizeMode.CanResize;
         Background = new SolidColorBrush(Color.FromRgb(0xF3, 0xF3, 0xF3));
@@ -162,7 +160,6 @@ internal class ClipboardHistoryWindow : Window
         Height = state.Height;
         _singleLineMode = state.SingleLine;
         _mode = state.ViewMode;
-        Topmost = _mode != HistoryMode.Files;
         Title = _mode switch
         {
             HistoryMode.Global => "Clipboard History — System",
@@ -296,7 +293,6 @@ internal class ClipboardHistoryWindow : Window
             _mode = HistoryMode.App;
             ClipboardHistory.HistoryChanged += OnHistoryChanged;
             Title = "Clipboard History";
-            Topmost = false;
             UpdateActiveTab();
             RefreshCards();
         };
@@ -307,7 +303,6 @@ internal class ClipboardHistoryWindow : Window
             _mode = HistoryMode.Global;
             NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
             Title = "Clipboard History — System";
-            Topmost = false;
             UpdateActiveTab();
             RefreshCards();
         };
@@ -318,7 +313,6 @@ internal class ClipboardHistoryWindow : Window
             if (_mode == HistoryMode.Global) NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
             _mode = HistoryMode.Files;
             Title = "Saved Files";
-            Topmost = false;
             UpdateActiveTab();
             RefreshCards();
         };

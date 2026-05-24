@@ -761,6 +761,7 @@ namespace MinimalNotepad
         /// </summary>
         internal static void OpenOrFocusSavedFile(SavedFileEntry entry, NotepadWindow callerWindow)
         {
+            // If already open in some window, just focus that window
             foreach (Window w in Application.Current.Windows)
             {
                 if (w is NotepadWindow nw && nw.SavedFileName == entry.FileName)
@@ -769,6 +770,17 @@ namespace MinimalNotepad
                     nw._editor.Focus();
                     return;
                 }
+            }
+
+            // If caller window has no file attached and content is trivial (<10 chars),
+            // reuse it instead of opening a new window
+            if (callerWindow._savedFileName == null &&
+                callerWindow._editor.Text.Trim().Length < 10)
+            {
+                callerWindow.LoadSavedFile(entry);
+                callerWindow.Activate();
+                callerWindow._editor.Focus();
+                return;
             }
 
             var newWin = new NotepadWindow(
