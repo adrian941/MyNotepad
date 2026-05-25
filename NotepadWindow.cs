@@ -18,6 +18,8 @@ namespace MinimalNotepad
         private readonly string                   _settingsFile;
         private readonly IReadOnlyDictionary<int, string> _textColorMap;
         private readonly IReadOnlyDictionary<int, string> _highlightColorMap;
+        private readonly IReadOnlyDictionary<int, string> _darkTextColorMap;
+        private readonly IReadOnlyDictionary<int, string> _strongHighlightMap;
         private readonly IReadOnlyList<ColorEntry>        _colorEntries;
         private readonly List<NotepadWindow>      _allWindows;
 
@@ -37,11 +39,13 @@ namespace MinimalNotepad
             double offsetX = -1,
             double offsetY = -1)
         {
-            var (textColorMap, highlightColorMap) = ConfigLoader.BuildColorMaps(colorEntries);
+            var (textColorMap, highlightColorMap, darkTextColorMap, strongHighlightMap) = ConfigLoader.BuildColorMaps(colorEntries);
             _settings          = settings;
             _settingsFile      = settingsFile;
             _textColorMap      = textColorMap;
             _highlightColorMap = highlightColorMap;
+            _darkTextColorMap  = darkTextColorMap;
+            _strongHighlightMap = strongHighlightMap;
             _colorEntries      = colorEntries;
             _allWindows        = allWindows;
 
@@ -301,17 +305,27 @@ namespace MinimalNotepad
 
             // ── Text color: Ctrl+1 … Ctrl+5 ───────────────────────────────────
             int digitKey = DigitKeyNumber(e.Key);
-            if (digitKey >= 1 && digitKey <= 5 && _textColorMap.TryGetValue(digitKey, out var fgColor))
+            bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+
+            if (digitKey >= 1 && digitKey <= 5)
             {
-                ApplyFormatting((s, end) => _fmtManager.ToggleForeColor(s, end, fgColor));
-                e.Handled = true; return;
+                var map = shift ? _darkTextColorMap : _textColorMap;
+                if (map.TryGetValue(digitKey, out var fgColor))
+                {
+                    ApplyFormatting((s, end) => _fmtManager.ToggleForeColor(s, end, fgColor));
+                    e.Handled = true; return;
+                }
             }
 
             // ── Highlight: Ctrl+6 … Ctrl+9, Ctrl+0 ───────────────────────────
-            if ((digitKey >= 6 || digitKey == 0) && _highlightColorMap.TryGetValue(digitKey, out var bgColor))
+            if (digitKey >= 6 || digitKey == 0)
             {
-                ApplyFormatting((s, end) => _fmtManager.ToggleBackColor(s, end, bgColor));
-                e.Handled = true; return;
+                var map = shift ? _strongHighlightMap : _highlightColorMap;
+                if (map.TryGetValue(digitKey, out var bgColor))
+                {
+                    ApplyFormatting((s, end) => _fmtManager.ToggleBackColor(s, end, bgColor));
+                    e.Handled = true; return;
+                }
             }
 
             // ── Rename saved file (Ctrl+R) ───────────────────────────────────
@@ -333,9 +347,9 @@ namespace MinimalNotepad
             // ── Save file (Ctrl+S / Ctrl+Shift+S) ────────────────────────────
             if (e.Key == Key.S)
             {
-                bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+                bool shiftDown = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
                 e.Handled = true;
-                if (shift || _savedFileName == null)
+                if (shiftDown || _savedFileName == null)
                     ShowSaveFileDialog();
                 else
                     SaveCurrentFile(_savedFileName);

@@ -20,8 +20,9 @@ namespace MinimalNotepad.Config
     {
         [JsonPropertyName("_legend")]
         public string Legend { get; set; } =
-            "keyNumber: 1-5 = textColor (typeId=1), 6-9 & 0 = highlight (typeId=2) | " +
-            "same color → reverts to black/transparent";
+            "keyNumber: 1-5 = textColor (typeId=1 normal / typeId=3 dark), " +
+            "6-9 & 0 = highlight (typeId=2 light / typeId=4 strong) | " +
+            "Ctrl+digit = normal, Ctrl+Shift+digit = intense | same color → reverts to default";
 
         [JsonPropertyName("colors")]
         public List<ColorEntry> Colors { get; set; } = new();

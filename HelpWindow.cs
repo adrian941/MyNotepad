@@ -164,7 +164,7 @@ namespace MinimalNotepad
                     Dot(e.ColorHex ?? "#000000"),
                     Label(e.Name ?? $"Color {e.KeyNumber}")));
             root.Children.Add(colorWrap);
-            root.Children.Add(Note("Same key again → resets to black"));
+            root.Children.Add(Note("Same key again → resets to black  ·  +Shift = darker shade"));
 
             // ── Highlights ────────────────────────────────────────────────────
             root.Children.Add(Section("Highlights  (select text first)"));
@@ -176,7 +176,7 @@ namespace MinimalNotepad
                     Swatch(e.ColorHex ?? "#FFFFFF"),
                     Label(e.Name ?? $"Color {e.KeyNumber}")));
             root.Children.Add(hlWrap);
-            root.Children.Add(Note("Same key again → removes highlight"));
+            root.Children.Add(Note("Same key again → removes highlight  ·  +Shift = stronger color"));
 
             // ── Move Lines ────────────────────────────────────────────────────
             root.Children.Add(Section("Move Lines"));
