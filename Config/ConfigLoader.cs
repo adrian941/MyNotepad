@@ -127,11 +127,11 @@ namespace MinimalNotepad.Config
                 new() { KeyNumber = 9, TypeId = 2, ColorHex = "#FFCDD2", Name = "Red"    },
                 new() { KeyNumber = 0, TypeId = 2, ColorHex = "#F3E5F5", Name = "Violet" },
 
-                // ── Strong highlights (typeId = 4) ── Ctrl+Shift+6…9,0, Material 200 ──
-                new() { KeyNumber = 6, TypeId = 4, ColorHex = "#A5D6A7", Name = "Strong Green"  },
+                // ── Strong highlights (typeId = 4) ── Ctrl+Shift+6…9,0, vivid colors ──
+                new() { KeyNumber = 6, TypeId = 4, ColorHex = "#95C11F", Name = "Strong Green"  },
                 new() { KeyNumber = 7, TypeId = 4, ColorHex = "#90CAF9", Name = "Strong Blue"   },
                 new() { KeyNumber = 8, TypeId = 4, ColorHex = "#FFCC80", Name = "Strong Orange" },
-                new() { KeyNumber = 9, TypeId = 4, ColorHex = "#EF9A9A", Name = "Strong Red"    },
+                new() { KeyNumber = 9, TypeId = 4, ColorHex = "#E30613", Name = "Strong Red"    },
                 new() { KeyNumber = 0, TypeId = 4, ColorHex = "#CE93D8", Name = "Strong Violet" },
             }
         };
