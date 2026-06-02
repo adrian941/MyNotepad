@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using ICSharpCode.AvalonEdit;
+using ICSharpCode.AvalonEdit.Highlighting;
 using MinimalNotepad.Config;
 using MinimalNotepad.Formatting;
 
@@ -30,6 +32,10 @@ namespace MinimalNotepad
         public string? SavedFileName => _savedFileName;
         private TextEditor _editor        = null!;
         private FormattingManager _fmtManager = null!;
+        private CodeSyntaxColorizer           _codeColorizer          = null!;
+        private CodeBlockBackgroundRenderer   _codeRenderer           = null!;
+        private CodeBlockPaddingGenerator     _codePaddingGenerator   = null!;
+        private System.Windows.Threading.DispatcherTimer _reParseTimer = null!;
 
         public NotepadWindow(
             AppSettings               settings,
@@ -120,9 +126,31 @@ namespace MinimalNotepad
 
         void InitializeFormatting()
         {
-            _fmtManager = new FormattingManager(_editor.Document);
-            _editor.TextArea.TextView.LineTransformers.Add(new RichTextColorizer(_fmtManager));
+            _fmtManager           = new FormattingManager(_editor.Document);
+            _codeColorizer        = new CodeSyntaxColorizer();
+            _codeRenderer         = new CodeBlockBackgroundRenderer();
+            _codePaddingGenerator = new CodeBlockPaddingGenerator();
+
+            _editor.TextArea.TextView.BackgroundRenderers.Add(_codeRenderer);
+            _editor.TextArea.TextView.ElementGenerators.Add(_codePaddingGenerator);
+            _editor.TextArea.TextView.LineTransformers.Add(new MinimalNotepad.Formatting.RichTextColorizer(_fmtManager));
+            _editor.TextArea.TextView.LineTransformers.Add(_codeColorizer);
             _editor.TextArea.TextView.ElementGenerators.Add(new NonBreakingHyphenGenerator());
+
+            _reParseTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(100)
+            };
+            _reParseTimer.Tick += (_, _) => { _reParseTimer.Stop(); ReparseCodeBlocks(); };
+        }
+
+        void ReparseCodeBlocks()
+        {
+            var regions = CodeBlockParser.Parse(_editor.Document);
+            _codeColorizer.UpdateBlocks(_editor.Document, regions);
+            _codeRenderer.UpdateRegions(regions);
+            _codePaddingGenerator.UpdateRegions(regions);
+            _editor.TextArea.TextView.Redraw();
         }
 
         // ── Event wiring ──────────────────────────────────────────────────────
@@ -169,9 +197,31 @@ namespace MinimalNotepad
 
             if (_editor.Text.Length > 80000)
                 _editor.Dispatcher.BeginInvoke(new Action(() => _editor.Clear()));
+
+            _reParseTimer.Stop();
+            _reParseTimer.Start();
         }
 
-        void OnCaretPositionChanged(object? sender, EventArgs e) => UpdateTitle();
+        void OnCaretPositionChanged(object? sender, EventArgs e)
+        {
+            UpdateTitle();
+            UpdateCaretBrush();
+        }
+
+        static readonly SolidColorBrush DarkCaretBrush  = MakeFrozen(Color.FromRgb(0xFF, 0xFF, 0xFF));
+        static readonly SolidColorBrush LightCaretBrush = MakeFrozen(Color.FromRgb(0x00, 0x00, 0x00));
+        static SolidColorBrush MakeFrozen(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
+
+        void UpdateCaretBrush()
+        {
+            int offset = _editor.TextArea.Caret.Offset;
+            bool inBlock = false;
+            foreach (var b in _codeColorizer.CurrentBlocks)
+            {
+                if (offset >= b.ContentStart && offset <= b.ContentEnd) { inBlock = true; break; }
+            }
+            _editor.TextArea.Caret.CaretBrush = inBlock ? DarkCaretBrush : LightCaretBrush;
+        }
 
         void UpdateTitle()
         {
@@ -261,10 +311,8 @@ namespace MinimalNotepad
             {
                 if (_editor.SelectionLength > 0)
                 {
-                    var richJson = RichClipboard.Copy(
-                        _editor.SelectedText,
-                        _fmtManager.TakeSnapshot(),
-                        _editor.SelectionStart);
+                    var spans    = SpansForCopy(_editor.SelectionStart, _editor.SelectionLength);
+                    var richJson = RichClipboard.Copy(_editor.SelectedText, spans, _editor.SelectionStart);
                     ClipboardHistory.Push(_editor.SelectedText, richJson);
                     e.Handled = true;
                 }
@@ -276,10 +324,8 @@ namespace MinimalNotepad
             {
                 if (_editor.SelectionLength > 0)
                 {
-                    var richJson = RichClipboard.Copy(
-                        _editor.SelectedText,
-                        _fmtManager.TakeSnapshot(),
-                        _editor.SelectionStart);
+                    var spans    = SpansForCopy(_editor.SelectionStart, _editor.SelectionLength);
+                    var richJson = RichClipboard.Copy(_editor.SelectedText, spans, _editor.SelectionStart);
                     ClipboardHistory.Push(_editor.SelectedText, richJson);
                     _editor.Document.Remove(_editor.SelectionStart, _editor.SelectionLength);
                     e.Handled = true;
@@ -353,6 +399,15 @@ namespace MinimalNotepad
                     ShowSaveFileDialog();
                 else
                     SaveCurrentFile(_savedFileName);
+                return;
+            }
+
+            // ── Code block wrap (Ctrl+, or Ctrl+.) ──────────────────────────
+            if (e.Key == Key.OemComma || e.Key == Key.OemPeriod)
+            {
+                if (_editor.SelectionLength > 0)
+                    ShowLanguagePicker();
+                e.Handled = true;
                 return;
             }
 
@@ -767,6 +822,7 @@ namespace MinimalNotepad
             _editor.CaretOffset = 0;
             _editor.Focus();
             UpdateTitle();
+            ReparseCodeBlocks();
         }
 
         /// <summary>
@@ -822,6 +878,142 @@ namespace MinimalNotepad
 
         void ShowHelpWindow() =>
             HelpWindow.ShowOrActivate(_colorEntries, _settings, _settingsFile);
+
+        // ── Copy helper: strips spans if selection is inside a code block ────
+
+        List<FormattingManager.SpanRecord> SpansForCopy(int selStart, int selLen)
+        {
+            int selEnd = selStart + selLen;
+            foreach (var region in _codeColorizer.CurrentBlocks)
+            {
+                if (selStart >= region.ContentStart && selEnd <= region.ContentEnd)
+                    return new List<FormattingManager.SpanRecord>(); // plain text only
+            }
+            return _fmtManager.TakeSnapshot();
+        }
+
+        // ── Language picker popup (Ctrl+,) ────────────────────────────────────
+
+        void ShowLanguagePicker()
+        {
+            int savedStart = _editor.SelectionStart;
+            int savedLen   = _editor.SelectionLength;
+
+            var preferred = new[] {
+                ("C#", "csharp"), ("SQL", "sql"), ("HTML", "html"),
+                ("JavaScript", "javascript"), ("CSS", "css"),
+                ("JSON", "json"), ("XML", "xml"),
+            };
+            var knownDefs = new HashSet<string> { "C#", "TSQL", "HTML", "JavaScript", "CSS", "XML" };
+            var restPairs = HighlightingManager.Instance.HighlightingDefinitions
+                .Select(d => d.Name)
+                .Where(n => !knownDefs.Contains(n))
+                .OrderBy(n => n)
+                .Select(n => (n, n.ToLowerInvariant()));
+
+            // Build parallel lists: allDisplayNames (shown) + tagOf (display → fence tag)
+            var allDisplayNames = new List<string>();
+            var tagOf           = new Dictionary<string, string>();
+            foreach (var (display, tag) in preferred.Concat(restPairs))
+            {
+                allDisplayNames.Add(display);
+                tagOf[display] = tag;
+            }
+
+            var popup = new Window
+            {
+                Title                 = "Wrap as code block — choose language",
+                Width                 = 220,
+                Height                = 320,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner                 = this,
+                Topmost               = true,
+                ResizeMode            = ResizeMode.NoResize,
+                WindowStyle           = WindowStyle.ToolWindow,
+                Background            = Brushes.White
+            };
+
+            var search = new TextBox
+            {
+                Margin      = new Thickness(6, 6, 6, 4),
+                FontFamily  = new FontFamily("Consolas"),
+                FontSize    = 13
+            };
+
+            var list = new ListBox
+            {
+                FontFamily  = new FontFamily("Consolas"),
+                FontSize    = 13,
+                ItemsSource = allDisplayNames
+            };
+
+            search.TextChanged += (_, _) =>
+            {
+                string q = search.Text.ToLowerInvariant();
+                list.ItemsSource = string.IsNullOrEmpty(q)
+                    ? allDisplayNames
+                    : allDisplayNames.Where(d =>
+                        d.ToLowerInvariant().Contains(q) ||
+                        tagOf.TryGetValue(d, out var t) && t.Contains(q)).ToList();
+            };
+
+            void Confirm()
+            {
+                string? display = list.SelectedItem as string
+                    ?? (list.Items.Count == 1 ? list.Items[0] as string : null);
+                if (display == null || !tagOf.TryGetValue(display, out var tag)) return;
+                popup.Close();
+                WrapSelectionInCodeBlock(savedStart, savedLen, tag);
+            }
+
+            list.MouseDoubleClick += (_, _) => Confirm();
+            list.PreviewKeyDown   += (_, ke) =>
+            {
+                if (ke.Key == Key.Enter)  { Confirm();       ke.Handled = true; }
+                if (ke.Key == Key.Escape) { popup.Close();   ke.Handled = true; }
+            };
+            search.PreviewKeyDown += (_, ke) =>
+            {
+                if (ke.Key == Key.Enter)  { Confirm();       ke.Handled = true; }
+                if (ke.Key == Key.Escape) { popup.Close();   ke.Handled = true; }
+                if (ke.Key == Key.Down)   { list.Focus(); list.SelectedIndex = Math.Max(0, list.SelectedIndex); }
+            };
+
+            var stack = new StackPanel();
+            stack.Children.Add(search);
+            stack.Children.Add(list);
+            popup.Content = stack;
+
+            popup.Loaded += (_, _) => search.Focus();
+            popup.ShowDialog();
+        }
+
+        void WrapSelectionInCodeBlock(int selStart, int selLen, string lang)
+        {
+            var doc    = _editor.Document;
+            int selEnd = selStart + selLen;
+
+            var startLine = doc.GetLineByOffset(selStart);
+            var endLine   = doc.GetLineByOffset(selEnd);
+
+            bool startMidLine = selStart > startLine.Offset;
+            bool endMidLine   = selEnd   < endLine.Offset + endLine.Length;
+
+            string selectedText = doc.GetText(selStart, selLen);
+            string fenceOpen    = $"```{lang}";
+            const string fenceClose = "```";
+
+            string prefix = startMidLine ? "\n" : "";
+            string suffix = endMidLine   ? "\n" : "";
+
+            string replacement = $"{prefix}{fenceOpen}\n{selectedText}{suffix}\n{fenceClose}";
+
+            doc.Replace(selStart, selLen, replacement);
+
+            // Place caret after closing fence
+            int newOffset = selStart + replacement.Length;
+            _editor.CaretOffset = Math.Min(newOffset, doc.TextLength);
+        }
 
         // ── Paste content directly (used by ClipboardHistoryWindow) ──────────
 
