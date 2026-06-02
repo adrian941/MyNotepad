@@ -35,6 +35,7 @@ namespace MinimalNotepad
         private CodeSyntaxColorizer           _codeColorizer          = null!;
         private CodeBlockBackgroundRenderer   _codeRenderer           = null!;
         private CodeBlockPaddingGenerator     _codePaddingGenerator   = null!;
+        private CodeBlockFontSizeTransformer  _codeFontSizeTransformer = null!;
         private System.Windows.Threading.DispatcherTimer _reParseTimer = null!;
 
         public NotepadWindow(
@@ -133,8 +134,11 @@ namespace MinimalNotepad
 
             _editor.TextArea.TextView.BackgroundRenderers.Add(_codeRenderer);
             _editor.TextArea.TextView.ElementGenerators.Add(_codePaddingGenerator);
+            _codeFontSizeTransformer = new CodeBlockFontSizeTransformer();
+
             _editor.TextArea.TextView.LineTransformers.Add(new MinimalNotepad.Formatting.RichTextColorizer(_fmtManager));
             _editor.TextArea.TextView.LineTransformers.Add(_codeColorizer);
+            _editor.TextArea.TextView.LineTransformers.Add(_codeFontSizeTransformer);
             _editor.TextArea.TextView.ElementGenerators.Add(new NonBreakingHyphenGenerator());
 
             _reParseTimer = new System.Windows.Threading.DispatcherTimer
@@ -150,6 +154,7 @@ namespace MinimalNotepad
             _codeColorizer.UpdateBlocks(_editor.Document, regions);
             _codeRenderer.UpdateRegions(regions);
             _codePaddingGenerator.UpdateRegions(regions);
+            _codeFontSizeTransformer.UpdateRegions(_codeColorizer.CurrentBlocks);
             _editor.TextArea.TextView.Redraw();
         }
 
