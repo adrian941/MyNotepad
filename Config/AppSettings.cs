@@ -8,5 +8,7 @@ namespace MinimalNotepad.Config
         public double WindowHeight        { get; set; } = 600;
         public double FontSize               { get; set; } = 12;
         public bool   SaveGlobalClipboard   { get; set; } = false;
+        public bool   FindMatchCase         { get; set; } = false;
+        public bool   FindWholeWord         { get; set; } = false;
     }
 }

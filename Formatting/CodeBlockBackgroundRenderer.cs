@@ -16,6 +16,8 @@ namespace MinimalNotepad.Formatting
 
         private List<CodeBlockRegion> _regions = new();
 
+        public bool IsDarkMode { get; set; }
+
         public KnownLayer Layer => KnownLayer.Background;
 
         public void UpdateRegions(List<CodeBlockRegion> regions) => _regions = regions;
@@ -52,10 +54,13 @@ namespace MinimalNotepad.Formatting
 
                 if (blockTop >= blockBottom) continue;
 
-                double w = textView.ActualWidth;
-                dc.DrawRoundedRectangle(null, EdgePen,
-                    new Rect(0.5, blockTop + 0.5, Math.Max(0, w - 1), blockBottom - blockTop - 1),
-                    CornerRadius, CornerRadius);
+                if (!IsDarkMode)
+                {
+                    double w = textView.ActualWidth;
+                    dc.DrawRoundedRectangle(null, EdgePen,
+                        new Rect(0.5, blockTop + 0.5, Math.Max(0, w - 1), blockBottom - blockTop - 1),
+                        CornerRadius, CornerRadius);
+                }
             }
         }
 

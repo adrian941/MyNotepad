@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using ICSharpCode.AvalonEdit;
 using ICSharpCode.AvalonEdit.Rendering;
+using MinimalNotepad.Config;
 
 namespace MinimalNotepad
 {
@@ -14,6 +15,8 @@ namespace MinimalNotepad
     {
         // ── Singleton ─────────────────────────────────────────────────────────
         static FindReplaceWindow? _instance;
+        static AppSettings?       _appSettings;
+        static string             _appSettingsFile = "";
 
         static readonly List<string> FindHistory    = new();
         static readonly List<string> ReplaceHistory = new();
@@ -25,8 +28,11 @@ namespace MinimalNotepad
 
         public static void ShowFor(
             TextEditor editor, Window callerWindow,
-            bool replaceMode, string? initialText = null)
+            bool replaceMode, string? initialText = null,
+            AppSettings? settings = null, string settingsFile = "")
         {
+            if (settings != null) { _appSettings = settings; _appSettingsFile = settingsFile; }
+
             if (_instance != null && _instance.IsLoaded && _instance.Owner != callerWindow)
             {
                 // Owner changed — preserve state, recreate under new owner
@@ -110,7 +116,8 @@ namespace MinimalNotepad
         readonly TextBlock    _countLabel;
         readonly ToggleButton _caseBtn;
         readonly ToggleButton _wordBtn;
-        readonly UIElement    _replaceSection;
+        readonly UIElement    _replaceComboRow;
+        readonly UIElement    _replaceButtonRow;
         readonly TextBlock    _titleLabel;
 
         // ── Constructor ───────────────────────────────────────────────────────
@@ -126,7 +133,7 @@ namespace MinimalNotepad
             ShowInTaskbar         = false;
             Background            = Brushes.Transparent;
 
-            (_findBox, _replaceBox, _countLabel, _caseBtn, _wordBtn, _replaceSection, _titleLabel)
+            (_findBox, _replaceBox, _countLabel, _caseBtn, _wordBtn, _replaceComboRow, _replaceButtonRow, _titleLabel)
                 = BuildContent();
 
             Closed += OnClosed;
@@ -177,7 +184,8 @@ namespace MinimalNotepad
             _replaceMode = replaceMode;
             Title            = replaceMode ? "Find & Replace" : "Find";
             _titleLabel.Text = replaceMode ? "Find & Replace" : "Find";
-            _replaceSection.Visibility = replaceMode ? Visibility.Visible : Visibility.Collapsed;
+            _replaceComboRow.Visibility  = replaceMode ? Visibility.Visible : Visibility.Collapsed;
+            _replaceButtonRow.Visibility = replaceMode ? Visibility.Visible : Visibility.Collapsed;
         }
 
         // ── Search logic ──────────────────────────────────────────────────────
@@ -244,7 +252,7 @@ namespace MinimalNotepad
                     else
                     {
                         _renderer?.Update(_matches, _currentIdx);
-                        _target.TextArea.TextView.Redraw();
+                        RedrawHighlight();
                         UpdateCount();
                     }
                     return;
@@ -252,7 +260,7 @@ namespace MinimalNotepad
             }
 
             _renderer?.Update(new(), -1);
-            _target.TextArea.TextView.Redraw();
+            RedrawHighlight();
             UpdateCount();
         }
 
@@ -272,8 +280,23 @@ namespace MinimalNotepad
             _target.Select(start, len);
             _target.TextArea.Caret.BringCaretToView();
             _renderer?.Update(_matches, _currentIdx);
-            _target.TextArea.TextView.Redraw();
+            RedrawHighlight();
             UpdateCount();
+        }
+
+        void RedrawHighlight()
+        {
+            if (_target == null) return;
+            var tv = _target.TextArea.TextView;
+            tv.Redraw();
+            // KnownLayer.Caret is a separate UIElement; Redraw() only calls InvalidateMeasure()
+            // on the TextView itself, which doesn't propagate InvalidateVisual() to child layers.
+            // Iterate and force every layer to re-render so the highlight stays current even
+            // when keyboard focus is on the find bar rather than the editor.
+            int n = VisualTreeHelper.GetChildrenCount(tv);
+            for (int i = 0; i < n; i++)
+                if (VisualTreeHelper.GetChild(tv, i) is UIElement layer)
+                    layer.InvalidateVisual();
         }
 
         void UpdateCount()
@@ -334,7 +357,7 @@ namespace MinimalNotepad
         // ── UI ────────────────────────────────────────────────────────────────
 
         (ComboBox findBox, ComboBox replaceBox, TextBlock countLabel,
-         ToggleButton caseBtn, ToggleButton wordBtn, UIElement replaceSection, TextBlock titleLabel)
+         ToggleButton caseBtn, ToggleButton wordBtn, UIElement replaceComboRow, UIElement replaceButtonRow, TextBlock titleLabel)
         BuildContent()
         {
             var toggleStyle = BuildToggleStyle();
@@ -396,9 +419,9 @@ namespace MinimalNotepad
             var root = new StackPanel { Margin = new Thickness(16, 0, 16, 16) };
             outer.Children.Add(root);
 
-            // ── Find combobox ─────────────────────────────────────────────────
+            // ── Comboboxes with labels ────────────────────────────────────────
             var findBox = MakeComboBox();
-            root.Children.Add(findBox);
+            root.Children.Add(MakeLabeledRow("Find", findBox));
 
             // ── Toolbar (toggles left, nav right) ─────────────────────────────
             var toolbar = new DockPanel
@@ -407,10 +430,21 @@ namespace MinimalNotepad
                 Margin        = new Thickness(0, 8, 0, 0),
             };
 
-            var caseBtn = new ToggleButton { Content = "Aa",  ToolTip = "Match Case",        Style = toggleStyle };
-            var wordBtn = new ToggleButton { Content = "ab",  ToolTip = "Match Whole Word",  Style = toggleStyle };
+            var caseBtn = new ToggleButton
+            {
+                Content   = "Aa",
+                ToolTip   = "Match Case",
+                Style     = toggleStyle,
+                IsChecked = _appSettings?.FindMatchCase ?? false,
+            };
+            var wordBtn = new ToggleButton
+            {
+                Content   = "ab",
+                ToolTip   = "Match Whole Word",
+                Style     = toggleStyle,
+                IsChecked = _appSettings?.FindWholeWord ?? false,
+            };
             caseBtn.Margin = new Thickness(0, 0, 6, 0);
-            wordBtn.Margin = new Thickness(0, 0, 0, 0);
 
             var countLabel = new TextBlock
             {
@@ -432,6 +466,9 @@ namespace MinimalNotepad
             toolbar.Children.Add(caseBtn);
             toolbar.Children.Add(wordBtn);
 
+            Activated   += (_, _) => Opacity = 1.0;
+            Deactivated += (_, _) => Opacity = 0.55;
+
             // Right: count, next, prev (added right-to-left)
             DockPanel.SetDock(countLabel, Dock.Right);
             DockPanel.SetDock(nextBtn,    Dock.Right);
@@ -440,43 +477,41 @@ namespace MinimalNotepad
             toolbar.Children.Add(nextBtn);
             toolbar.Children.Add(prevBtn);
 
+            var replaceBox      = MakeComboBox();
+            var replaceComboRow = MakeLabeledRow("Replace", replaceBox, topMargin: 8);
+            replaceComboRow.Visibility = Visibility.Collapsed;
+            root.Children.Add(replaceComboRow);
+
             root.Children.Add(toolbar);
-
-            // ── Replace section ───────────────────────────────────────────────
-            var replaceSection = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
-
-            replaceSection.Children.Add(new Border
-            {
-                Height          = 1,
-                Background      = new SolidColorBrush(Color.FromRgb(0xE4, 0xE4, 0xEA)),
-                Margin          = new Thickness(-16, 0, -16, 12),
-            });
-
-            var replaceBox = MakeComboBox();
-            replaceSection.Children.Add(replaceBox);
 
             var replaceBtnRow = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Margin      = new Thickness(0, 8, 0, 0),
+                Margin      = new Thickness(0, 10, 0, 0),
+                Visibility  = Visibility.Collapsed,
             };
             var replaceBtn    = MakeActionButton("Replace",     "Replace this match (Enter)", primary: false);
             var replaceAllBtn = MakeActionButton("Replace All", "Replace all matches",        primary: true);
             replaceBtn.Margin = new Thickness(0, 0, 8, 0);
             replaceBtnRow.Children.Add(replaceBtn);
             replaceBtnRow.Children.Add(replaceAllBtn);
-            replaceSection.Children.Add(replaceBtnRow);
-
-            replaceSection.Visibility = Visibility.Collapsed;
-            root.Children.Add(replaceSection);
+            root.Children.Add(replaceBtnRow);
 
             // ── Wire events ───────────────────────────────────────────────────
             closeBtn.Click += (_, _) => Close();
 
-            caseBtn.Checked   += (_, _) => RunSearch();
-            caseBtn.Unchecked += (_, _) => RunSearch();
-            wordBtn.Checked   += (_, _) => RunSearch();
-            wordBtn.Unchecked += (_, _) => RunSearch();
+            void SaveToggles()
+            {
+                if (_appSettings == null || string.IsNullOrEmpty(_appSettingsFile)) return;
+                _appSettings.FindMatchCase = caseBtn.IsChecked == true;
+                _appSettings.FindWholeWord = wordBtn.IsChecked == true;
+                ConfigLoader.SaveSettings(_appSettings, _appSettingsFile);
+            }
+
+            caseBtn.Checked   += (_, _) => { RunSearch(); SaveToggles(); };
+            caseBtn.Unchecked += (_, _) => { RunSearch(); SaveToggles(); };
+            wordBtn.Checked   += (_, _) => { RunSearch(); SaveToggles(); };
+            wordBtn.Unchecked += (_, _) => { RunSearch(); SaveToggles(); };
             prevBtn.Click     += (_, _) => Navigate(-1);
             nextBtn.Click     += (_, _) => Navigate(+1);
             replaceBtn.Click    += (_, _) => DoReplace();
@@ -502,7 +537,7 @@ namespace MinimalNotepad
                 if (ke.Key == Key.Escape) { ke.Handled = true; Close(); }
             };
 
-            return (findBox, replaceBox, countLabel, caseBtn, wordBtn, replaceSection, titleLabel);
+            return (findBox, replaceBox, countLabel, caseBtn, wordBtn, replaceComboRow, replaceBtnRow, titleLabel);
         }
 
         void OnFindKeyDown(object sender, KeyEventArgs e)
@@ -555,6 +590,26 @@ namespace MinimalNotepad
         }
 
         // ── Widget factories ──────────────────────────────────────────────────
+
+        static Grid MakeLabeledRow(string labelText, UIElement input, double topMargin = 0)
+        {
+            var g = new Grid { Margin = new Thickness(0, topMargin, 0, 0) };
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
+            g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var lbl = new TextBlock
+            {
+                Text              = labelText,
+                FontFamily        = new FontFamily("Segoe UI"),
+                FontSize          = 12,
+                Foreground        = new SolidColorBrush(Color.FromRgb(0x55, 0x55, 0x5E)),
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(lbl,   0);
+            Grid.SetColumn(input, 1);
+            g.Children.Add(lbl);
+            g.Children.Add(input);
+            return g;
+        }
 
         static ComboBox MakeComboBox() =>
             new ComboBox
@@ -790,7 +845,7 @@ namespace MinimalNotepad
         List<(int Start, int Length)> _matches    = new();
         int                           _currentIdx = -1;
 
-        public KnownLayer Layer => KnownLayer.Selection;
+        public KnownLayer Layer => KnownLayer.Caret;
 
         public void Update(List<(int Start, int Length)> matches, int currentIdx)
         {

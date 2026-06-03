@@ -28,6 +28,7 @@ namespace MinimalNotepad
         private string     _prefixTitle   = "";
         private string?    _savedFileName = null;   // null = never saved
         private bool       _isDirty       = false;  // unsaved changes since last save
+        private bool       _isCodeOnlyMode = false;
 
         public string? SavedFileName => _savedFileName;
         private TextEditor _editor        = null!;
@@ -76,10 +77,57 @@ namespace MinimalNotepad
             ConfigLoader.SaveSettings(_settings, _settingsFile);
         }
 
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
         protected override void OnSourceInitialized(EventArgs e)
         {
             base.OnSourceInitialized(e);
-            // Daemon owns its own HWND for clipboard listening — nothing to do here
+        }
+
+        void UpdateCodeOnlyMode(List<CodeBlockRegion> regions)
+        {
+            bool dark = IsCodeBlockOnly(regions);
+            if (dark == _isCodeOnlyMode) return;
+            _isCodeOnlyMode = dark;
+
+            var bgBrush = dark
+                ? new SolidColorBrush(Color.FromRgb(0x28, 0x28, 0x28))
+                : Brushes.White;
+            if (bgBrush is SolidColorBrush scb && !scb.IsFrozen) scb.Freeze();
+            Background         = bgBrush;
+            _editor.Background = bgBrush;
+            _codeRenderer.IsDarkMode = dark;
+
+            var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            if (hwnd != IntPtr.Zero)
+            {
+                int colorRef = dark ? 0x002E2E2E : 0x00FFFFFF;
+                DwmSetWindowAttribute(hwnd, 35 /* DWMWA_CAPTION_COLOR */, ref colorRef, sizeof(int));
+            }
+        }
+
+        bool IsCodeBlockOnly(List<CodeBlockRegion> regions)
+        {
+            if (regions.Count != 1) return false;
+
+            var doc       = _editor.Document;
+            var r         = regions[0];
+            var openLine  = doc.GetLineByNumber(r.FenceOpenLine);
+            var closeLine = doc.GetLineByNumber(r.FenceCloseLine);
+            int blockStart = openLine.Offset;
+            int blockEnd   = closeLine.Offset + closeLine.TotalLength;
+
+            if (blockStart > 0)
+                foreach (char c in doc.GetText(0, blockStart))
+                    if (!char.IsWhiteSpace(c)) return false;
+
+            int afterLen = doc.TextLength - blockEnd;
+            if (afterLen > 0)
+                foreach (char c in doc.GetText(blockEnd, afterLen))
+                    if (!char.IsWhiteSpace(c)) return false;
+
+            return true;
         }
 
         // ── Window shell ──────────────────────────────────────────────────────
@@ -167,6 +215,7 @@ namespace MinimalNotepad
             _codePaddingGenerator.UpdateRegions(regions);
             _codeFontSizeTransformer.UpdateRegions(_codeColorizer.CurrentBlocks);
             _copyOverlay.UpdateRegions(regions);
+            UpdateCodeOnlyMode(regions);
             _editor.TextArea.TextView.Redraw();
         }
 
@@ -444,7 +493,7 @@ namespace MinimalNotepad
                     && !_editor.SelectedText.Contains('\n')
                     && !_editor.SelectedText.Contains('\r')
                     ? _editor.SelectedText : null;
-                FindReplaceWindow.ShowFor(_editor, this, replaceMode: false, initialText: init);
+                FindReplaceWindow.ShowFor(_editor, this, replaceMode: false, initialText: init, settings: _settings, settingsFile: _settingsFile);
                 e.Handled = true;
                 return;
             }
@@ -471,7 +520,7 @@ namespace MinimalNotepad
                         && !_editor.SelectedText.Contains('\n')
                         && !_editor.SelectedText.Contains('\r')
                         ? _editor.SelectedText : null;
-                    FindReplaceWindow.ShowFor(_editor, this, replaceMode: true, initialText: init);
+                    FindReplaceWindow.ShowFor(_editor, this, replaceMode: true, initialText: init, settings: _settings, settingsFile: _settingsFile);
                 }
                 return;
             }
