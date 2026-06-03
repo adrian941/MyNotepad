@@ -189,12 +189,23 @@ namespace MinimalNotepad
             root.Children.Add(Section("Text Formatting  (select text first)"));
 
             var fmtWrap = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
-            fmtWrap.Children.Add(Row(Badge("Ctrl+B"),  Label("Bold")));
-            fmtWrap.Children.Add(Row(Badge("Ctrl+I"),  Label("Italic")));
-            fmtWrap.Children.Add(Row(Badge("Ctrl+U"),  Label("Underline")));
-            fmtWrap.Children.Add(Row(Badge("Ctrl+F5"), Label("Strikethrough")));
+            fmtWrap.Children.Add(Row(Badge("Ctrl+B"),      Label("Bold")));
+            fmtWrap.Children.Add(Row(Badge("Ctrl+I"),      Label("Italic")));
+            fmtWrap.Children.Add(Row(Badge("Ctrl+U"),      Label("Underline")));
+            fmtWrap.Children.Add(Row(Badge("Ctrl+F5"),     Label("Strikethrough")));
+            fmtWrap.Children.Add(Row(Badge("Alt+U"),       Label("Lowercase selection")));
+            fmtWrap.Children.Add(Row(Badge("Alt+Shift+U"), Label("Uppercase selection")));
             root.Children.Add(fmtWrap);
             root.Children.Add(Note("All formatting is undoable with Ctrl+Z"));
+
+            // ── Find & Replace ─────────────────────────────────────────────────
+            root.Children.Add(Section("Find & Replace"));
+
+            root.Children.Add(Row(Badge("Ctrl+F"), Label("Find  (uses current selection as search term)")));
+            root.Children.Add(Row(Badge("Ctrl+R"), Label("Find & Replace")));
+            root.Children.Add(Row(Badge("Enter"), Badge("F3"), Label("Next match")));
+            root.Children.Add(Row(Badge("Shift+Enter"), Badge("Shift+F3"), Label("Previous match")));
+            root.Children.Add(Note("Toggle Aa for case-sensitive, ab for whole word · one shared window across all instances"));
 
             // ── Window ────────────────────────────────────────────────────────
             root.Children.Add(Section("Window"));
@@ -202,8 +213,8 @@ namespace MinimalNotepad
             root.Children.Add(Row(Badge("Ctrl+N"),        Label("New window")));
             root.Children.Add(Row(Badge("Ctrl+S"),        Label("Save file")));
             root.Children.Add(Row(Badge("Ctrl+Shift+S"),  Label("Save file as new name")));
-            root.Children.Add(Row(Badge("Ctrl+R"),        Label("Rename saved file")));
-            root.Children.Add(Row(Badge("Ctrl+F"), Badge("Ctrl+O"), Label("Open saved files view")));
+            root.Children.Add(Row(Badge("Ctrl+Shift+R"),  Label("Rename saved file")));
+            root.Children.Add(Row(Badge("Ctrl+O"),        Label("Open saved files view")));
             root.Children.Add(Row(Badge("Ctrl+Alt+V"),    Label("Clipboard history (App / System)")));
             root.Children.Add(Row(Badge("Ctrl+H"),        Label("This help window")));
             root.Children.Add(Row(Badge("Ctrl+±"), Badge("Ctrl+scroll"), Label("Increase / decrease font size")));

@@ -116,6 +116,7 @@ namespace MinimalNotepad
             editorContainer.Children.Add(_editor);
             _overlayCanvas = new System.Windows.Controls.Canvas();
             editorContainer.Children.Add(_overlayCanvas);
+
             dock.Children.Add(editorContainer);
 
             Content = dock;
@@ -312,6 +313,33 @@ namespace MinimalNotepad
                 return;
             }
 
+            // Alt+U → lowercase selection, Alt+Shift+U → uppercase selection
+            if (e.Key == Key.System && e.SystemKey == Key.U && !ctrl)
+            {
+                bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+                if (_editor.SelectionLength > 0)
+                {
+                    string transformed = shift
+                        ? _editor.SelectedText.ToUpperInvariant()
+                        : _editor.SelectedText.ToLowerInvariant();
+                    int selStart = _editor.SelectionStart;
+                    int selLen   = _editor.SelectionLength;
+                    _editor.Document.Replace(selStart, selLen, transformed);
+                    _editor.Select(selStart, transformed.Length);
+                }
+                e.Handled = true;
+                return;
+            }
+
+            // F3 / Shift+F3 — next/previous match when find window is open
+            if (e.Key == Key.F3 && !ctrl && !alt && FindReplaceWindow.IsOpen)
+            {
+                bool shiftF3 = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+                if (shiftF3) FindReplaceWindow.FindPrevStatic(); else FindReplaceWindow.FindNextStatic();
+                e.Handled = true;
+                return;
+            }
+
             // Replace regular space with non-breaking space (prevents word-wrap at spaces)
             if (e.Key == Key.Space && !ctrl && !alt)
             {
@@ -409,19 +437,42 @@ namespace MinimalNotepad
                 }
             }
 
-            // ── Rename saved file (Ctrl+R) ───────────────────────────────────
-            if (e.Key == Key.R)
+            // ── Find (Ctrl+F) ─────────────────────────────────────────────────
+            if (e.Key == Key.F)
             {
+                string? init = _editor.SelectionLength > 0
+                    && !_editor.SelectedText.Contains('\n')
+                    && !_editor.SelectedText.Contains('\r')
+                    ? _editor.SelectedText : null;
+                FindReplaceWindow.ShowFor(_editor, this, replaceMode: false, initialText: init);
                 e.Handled = true;
-                if (_savedFileName != null) ShowRenameDialog();
                 return;
             }
 
-            // ── Open Files view (Ctrl+F / Ctrl+O) ────────────────────────────
-            if (e.Key == Key.F || e.Key == Key.O)
+            // ── Open Files view (Ctrl+O) ──────────────────────────────────────
+            if (e.Key == Key.O)
             {
                 ClipboardHistoryWindow.ShowOrActivateFiles(this);
                 e.Handled = true;
+                return;
+            }
+
+            // ── Replace (Ctrl+R) / Rename saved file (Ctrl+Shift+R) ──────────
+            if (e.Key == Key.R)
+            {
+                e.Handled = true;
+                if (shift)
+                {
+                    if (_savedFileName != null) ShowRenameDialog();
+                }
+                else
+                {
+                    string? init = _editor.SelectionLength > 0
+                        && !_editor.SelectedText.Contains('\n')
+                        && !_editor.SelectedText.Contains('\r')
+                        ? _editor.SelectedText : null;
+                    FindReplaceWindow.ShowFor(_editor, this, replaceMode: true, initialText: init);
+                }
                 return;
             }
 
@@ -484,6 +535,7 @@ namespace MinimalNotepad
 
         void OnWindowClosed(object? sender, EventArgs e)
         {
+            FindReplaceWindow.CloseIfTargeting(_editor);
             _settings.WindowLeft   = Left;
             _settings.WindowTop    = Top;
             _settings.WindowWidth  = Width;
