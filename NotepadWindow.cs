@@ -34,8 +34,10 @@ namespace MinimalNotepad
         private TextEditor _editor        = null!;
         private FormattingManager _fmtManager = null!;
         private CodeSyntaxColorizer           _codeColorizer          = null!;
-        private CodeBlockBackgroundRenderer   _codeRenderer           = null!;
-        private CodeBlockPaddingGenerator     _codePaddingGenerator   = null!;
+        private CodeBlockBackgroundRenderer    _codeRenderer              = null!;
+        private CodeBlockLineNumberRenderer    _codeLineNumberRenderer    = null!;
+        private CodeBlockLineNumberGenerator   _codeLineNumberGenerator   = null!;
+        private CodeBlockPaddingGenerator      _codePaddingGenerator      = null!;
         private CodeBlockFontSizeTransformer  _codeFontSizeTransformer = null!;
         private CodeBlockCopyOverlay          _copyOverlay            = null!;
         private System.Windows.Controls.Canvas _overlayCanvas         = null!;
@@ -97,7 +99,9 @@ namespace MinimalNotepad
             if (bgBrush is SolidColorBrush scb && !scb.IsFrozen) scb.Freeze();
             Background         = bgBrush;
             _editor.Background = bgBrush;
-            _codeRenderer.IsDarkMode = dark;
+            _codeRenderer.IsDarkMode            = dark;
+            _codeLineNumberRenderer.IsDarkMode  = dark;
+            _codeLineNumberGenerator.IsDarkMode = dark;
 
             var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
             if (hwnd != IntPtr.Zero)
@@ -188,7 +192,13 @@ namespace MinimalNotepad
             _codeRenderer         = new CodeBlockBackgroundRenderer();
             _codePaddingGenerator = new CodeBlockPaddingGenerator();
 
+            _codeLineNumberRenderer  = new CodeBlockLineNumberRenderer();
+            _codeLineNumberGenerator = new CodeBlockLineNumberGenerator { FontSize = _settings.FontSize };
             _editor.TextArea.TextView.BackgroundRenderers.Add(_codeRenderer);
+            _editor.TextArea.TextView.BackgroundRenderers.Add(_codeLineNumberRenderer);
+            // LineNumberGenerator must be before PaddingGenerator so its 0-length element
+            // is inserted first, then PaddingGenerator handles the first document char.
+            _editor.TextArea.TextView.ElementGenerators.Add(_codeLineNumberGenerator);
             _editor.TextArea.TextView.ElementGenerators.Add(_codePaddingGenerator);
             _codeFontSizeTransformer = new CodeBlockFontSizeTransformer();
 
@@ -214,6 +224,9 @@ namespace MinimalNotepad
             _codeRenderer.UpdateRegions(regions);
             _codePaddingGenerator.UpdateRegions(regions);
             _codeFontSizeTransformer.UpdateRegions(_codeColorizer.CurrentBlocks);
+            _codeLineNumberRenderer.IsDarkMode  = _isCodeOnlyMode;
+            _codeLineNumberGenerator.FontSize   = _editor.FontSize;
+            _codeLineNumberGenerator.UpdateRegions(regions);
             _copyOverlay.UpdateRegions(regions);
             UpdateCodeOnlyMode(regions);
             _editor.TextArea.TextView.Redraw();

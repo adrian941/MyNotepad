@@ -12,16 +12,17 @@ namespace MinimalNotepad.Formatting
 {
     class CodeBlockCopyOverlay
     {
-        const double BtnWidth  = 56;
-        const double BtnHeight = 20;
-        const double BtnGap    = 4;
-        const double BtnMargin = 8;
+        const double BtnWidth   = 56;
+        const double LnBtnWidth = 30;
+        const double BtnHeight  = 20;
+        const double BtnGap     = 4;
+        const double BtnMargin  = 8;
 
         readonly Canvas       _canvas;
         readonly TextView     _textView;
         readonly TextDocument _doc;
 
-        record BlockUI(Button CopyBtn, Button DelBtn, CodeBlockRegion Region);
+        record BlockUI(Button LnBtn, Button CopyBtn, Button DelBtn, CodeBlockRegion Region);
 
         readonly List<BlockUI> _uis = new();
 
@@ -38,6 +39,7 @@ namespace MinimalNotepad.Formatting
         {
             foreach (var ui in _uis)
             {
+                _canvas.Children.Remove(ui.LnBtn);
                 _canvas.Children.Remove(ui.CopyBtn);
                 _canvas.Children.Remove(ui.DelBtn);
             }
@@ -48,15 +50,19 @@ namespace MinimalNotepad.Formatting
                 if (region.FenceCloseLine <= region.FenceOpenLine + 1) continue;
                 var r = region;
 
+                var lnBtn = MakeButton("#", LnBtnWidth, active: r.LineNumbers);
+                lnBtn.Click += (_, _) => HandleToggleLineNumbers(r);
+
                 var copyBtn = MakeButton("Copy");
                 copyBtn.Click += (_, _) => HandleCopy(copyBtn, r);
 
                 var delBtn = MakeButton("Delete");
                 delBtn.Click += (_, _) => HandleDelete(delBtn, r);
 
+                _canvas.Children.Add(lnBtn);
                 _canvas.Children.Add(copyBtn);
                 _canvas.Children.Add(delBtn);
-                _uis.Add(new BlockUI(copyBtn, delBtn, region));
+                _uis.Add(new BlockUI(lnBtn, copyBtn, delBtn, region));
             }
 
             UpdatePositions();
@@ -68,7 +74,7 @@ namespace MinimalNotepad.Formatting
         {
             if (!_textView.VisualLinesValid || _textView.VisualLines.Count == 0)
             {
-                foreach (var ui in _uis) { ui.CopyBtn.Visibility = Visibility.Collapsed; ui.DelBtn.Visibility = Visibility.Collapsed; }
+                foreach (var ui in _uis) { ui.LnBtn.Visibility = Visibility.Collapsed; ui.CopyBtn.Visibility = Visibility.Collapsed; ui.DelBtn.Visibility = Visibility.Collapsed; }
                 return;
             }
 
@@ -107,14 +113,16 @@ namespace MinimalNotepad.Formatting
                 bTop = Math.Min(bTop, viewHeight - BtnHeight - BtnMargin);
 
                 bool vis = cTop < viewHeight && cBot > 0 && bTop >= cTop - 0.5;
+                ui.LnBtn.Visibility   = vis ? Visibility.Visible : Visibility.Collapsed;
                 ui.CopyBtn.Visibility = vis ? Visibility.Visible : Visibility.Collapsed;
                 ui.DelBtn.Visibility  = vis ? Visibility.Visible : Visibility.Collapsed;
 
                 if (!vis) continue;
 
                 double rightEdge = _textView.ActualWidth - BtnMargin;
-                PlaceButton(ui.DelBtn,  rightEdge - BtnWidth,             bTop);
-                PlaceButton(ui.CopyBtn, rightEdge - BtnWidth - BtnGap - BtnWidth, bTop);
+                PlaceButton(ui.DelBtn,  rightEdge - BtnWidth,                                         bTop);
+                PlaceButton(ui.CopyBtn, rightEdge - BtnWidth - BtnGap - BtnWidth,                    bTop);
+                PlaceButton(ui.LnBtn,   rightEdge - BtnWidth - BtnGap - BtnWidth - BtnGap - LnBtnWidth, bTop);
             }
         }
 
@@ -142,6 +150,16 @@ namespace MinimalNotepad.Formatting
             catch { }
 
             Flash(btn, "Copied!", "Copy");
+        }
+
+        void HandleToggleLineNumbers(CodeBlockRegion region)
+        {
+            var openLine = _doc.GetLineByNumber(region.FenceOpenLine);
+            string text  = _doc.GetText(openLine.Offset, openLine.Length);
+            string newText = region.LineNumbers
+                ? (text.EndsWith(":ln") ? text[..^3] : text)
+                : text + ":ln";
+            _doc.Replace(openLine.Offset, openLine.Length, newText);
         }
 
         void HandleDelete(Button btn, CodeBlockRegion region)
@@ -196,12 +214,12 @@ namespace MinimalNotepad.Formatting
             return double.NaN;
         }
 
-        static Button MakeButton(string label)
+        static Button MakeButton(string label, double width = BtnWidth, bool active = false)
         {
             var btn = new Button
             {
                 Content    = label,
-                Width      = BtnWidth,
+                Width      = width,
                 Height     = BtnHeight,
                 Focusable  = false,
                 Cursor     = Cursors.Hand,
@@ -212,7 +230,10 @@ namespace MinimalNotepad.Formatting
 
             var tpl    = new ControlTemplate(typeof(Button));
             var border = new FrameworkElementFactory(typeof(Border), "bd");
-            border.SetValue(Border.BackgroundProperty,      new SolidColorBrush(Color.FromArgb(0xBB, 0x3A, 0x3A, 0x3A)));
+            var bgColor = active
+                ? Color.FromArgb(0xCC, 0x35, 0x55, 0x28)
+                : Color.FromArgb(0xBB, 0x3A, 0x3A, 0x3A);
+            border.SetValue(Border.BackgroundProperty,      new SolidColorBrush(bgColor));
             border.SetValue(Border.BorderBrushProperty,     new SolidColorBrush(Color.FromArgb(0x99, 0x77, 0x77, 0x77)));
             border.SetValue(Border.BorderThicknessProperty, new Thickness(1));
             border.SetValue(Border.CornerRadiusProperty,    new CornerRadius(3));

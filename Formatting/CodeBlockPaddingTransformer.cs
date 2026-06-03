@@ -44,8 +44,6 @@ namespace MinimalNotepad.Formatting
                 if (ln >= region.FenceOpenLine && ln <= region.FenceCloseLine)
                 {
                     char first = CurrentContext.Document.GetCharAt(offset);
-                    // Consume 1 doc char; prepend a visual space for left inner-padding.
-                    // documentLength=1 → ChangeLinePart coloring still reaches this element.
                     return new FormattedTextElement(" " + first, 1);
                 }
             }
