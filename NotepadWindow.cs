@@ -36,6 +36,8 @@ namespace MinimalNotepad
         private CodeBlockBackgroundRenderer   _codeRenderer           = null!;
         private CodeBlockPaddingGenerator     _codePaddingGenerator   = null!;
         private CodeBlockFontSizeTransformer  _codeFontSizeTransformer = null!;
+        private CodeBlockCopyOverlay          _copyOverlay            = null!;
+        private System.Windows.Controls.Canvas _overlayCanvas         = null!;
         private System.Windows.Threading.DispatcherTimer _reParseTimer = null!;
 
         public NotepadWindow(
@@ -109,7 +111,12 @@ namespace MinimalNotepad
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
                 Padding                      = new Thickness(8)
             };
-            dock.Children.Add(_editor);
+            ApplyThinScrollBarStyle();
+            var editorContainer = new Grid();
+            editorContainer.Children.Add(_editor);
+            _overlayCanvas = new System.Windows.Controls.Canvas();
+            editorContainer.Children.Add(_overlayCanvas);
+            dock.Children.Add(editorContainer);
 
             Content = dock;
 
@@ -141,6 +148,9 @@ namespace MinimalNotepad
             _editor.TextArea.TextView.LineTransformers.Add(_codeFontSizeTransformer);
             _editor.TextArea.TextView.ElementGenerators.Add(new NonBreakingHyphenGenerator());
 
+            _copyOverlay = new CodeBlockCopyOverlay(
+                _overlayCanvas, _editor.TextArea.TextView, _editor.Document);
+
             _reParseTimer = new System.Windows.Threading.DispatcherTimer
             {
                 Interval = TimeSpan.FromMilliseconds(100)
@@ -155,6 +165,7 @@ namespace MinimalNotepad
             _codeRenderer.UpdateRegions(regions);
             _codePaddingGenerator.UpdateRegions(regions);
             _codeFontSizeTransformer.UpdateRegions(_codeColorizer.CurrentBlocks);
+            _copyOverlay.UpdateRegions(regions);
             _editor.TextArea.TextView.Redraw();
         }
 
@@ -174,6 +185,11 @@ namespace MinimalNotepad
             _editor.PreviewKeyDown    += OnPreviewKeyDown;
             _editor.TextArea.TextEntered += OnTextEntered;
             Closed += OnWindowClosed;
+
+            _editor.TextArea.TextView.ScrollOffsetChanged += (_, _) => _copyOverlay.UpdatePositions();
+            _editor.TextArea.TextView.VisualLinesChanged   += (_, _) => _copyOverlay.UpdatePositions();
+
+
 
             // Show hint title for 3 s, then revert to the normal Ln/Col title
             var hintTimer = new System.Windows.Threading.DispatcherTimer
@@ -319,6 +335,10 @@ namespace MinimalNotepad
                     var spans    = SpansForCopy(_editor.SelectionStart, _editor.SelectionLength);
                     var richJson = RichClipboard.Copy(_editor.SelectedText, spans, _editor.SelectionStart);
                     ClipboardHistory.Push(_editor.SelectedText, richJson);
+
+                    // If copying from within a code block, also add the custom format with markers
+                    TryAddCodeBlockFormatToClipboard(_editor.SelectedText, _editor.SelectionStart, _editor.SelectionLength);
+
                     e.Handled = true;
                 }
                 return; // no selection → let AvalonEdit copy line as usual
@@ -338,9 +358,19 @@ namespace MinimalNotepad
                 return;
             }
 
-            // Paste: plain text from any source; rich spans only from MinimalNotepad
+            // Paste: check for code block format first, then rich spans, then plain text
             if (e.Key == Key.V)
             {
+                // Try custom code block format (from Copy button or Ctrl+C within code block)
+                string? codeBlockContent = TryGetCodeBlockFormatFromClipboard();
+                if (codeBlockContent != null)
+                {
+                    PasteContent(codeBlockContent, null);
+                    e.Handled = true;
+                    return;
+                }
+
+                // Fall back to rich clipboard
                 var (text, spans) = RichClipboard.Paste();
                 if (text == null) { e.Handled = true; return; }
                 PasteContent(text, spans);
@@ -1020,6 +1050,52 @@ namespace MinimalNotepad
             _editor.CaretOffset = Math.Min(newOffset, doc.TextLength);
         }
 
+        void TryAddCodeBlockFormatToClipboard(string selectedText, int selStart, int selLen)
+        {
+            int selEnd = selStart + selLen;
+
+            // Find if selection is entirely within exactly one code block
+            CodeBlockRegion? block = null;
+            foreach (var b in _codeColorizer.CurrentBlocks)
+            {
+                int contentStart = _editor.Document.GetLineByNumber(b.FenceOpenLine).EndOffset + 1;
+                int contentEnd   = _editor.Document.GetLineByNumber(b.FenceCloseLine).Offset;
+
+                if (selStart >= contentStart && selEnd <= contentEnd)
+                {
+                    block = b;
+                    break;
+                }
+            }
+
+            if (block == null) return;
+
+            try
+            {
+                var dataObj = Clipboard.GetDataObject();
+                if (dataObj == null) return;
+
+                string withMarkers = $"```{block.Language}\n{selectedText}\n```";
+                dataObj.SetData("application/x-mynotepad-codeblock", withMarkers);
+                Clipboard.SetDataObject(dataObj);
+            }
+            catch { }
+        }
+
+        string? TryGetCodeBlockFormatFromClipboard()
+        {
+            try
+            {
+                var dataObj = Clipboard.GetDataObject();
+                if (dataObj == null || !dataObj.GetDataPresent("application/x-mynotepad-codeblock"))
+                    return null;
+
+                var data = dataObj.GetData("application/x-mynotepad-codeblock") as string;
+                return data;
+            }
+            catch { return null; }
+        }
+
         // ── Paste content directly (used by ClipboardHistoryWindow) ──────────
 
         internal void PasteContent(string text, List<FormattingManager.SpanRecord>? spans)
@@ -1042,6 +1118,51 @@ namespace MinimalNotepad
             }
 
             _editor.Focus();
+        }
+
+        void ApplyThinScrollBarStyle()
+        {
+            const string xaml =
+                "<ResourceDictionary" +
+                "    xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'" +
+                "    xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml'>" +
+                "  <Style TargetType='ScrollBar'>" +
+                "    <Setter Property='Width'    Value='7'/>" +
+                "    <Setter Property='MinWidth' Value='7'/>" +
+                "    <Setter Property='Template'>" +
+                "      <Setter.Value>" +
+                "        <ControlTemplate TargetType='ScrollBar'>" +
+                "          <Grid Background='#18808080'>" +
+                "            <Track Name='PART_Track' IsDirectionReversed='True'>" +
+                "              <Track.DecreaseRepeatButton>" +
+                "                <RepeatButton Opacity='0' Focusable='False'/>" +
+                "              </Track.DecreaseRepeatButton>" +
+                "              <Track.Thumb>" +
+                "                <Thumb>" +
+                "                  <Thumb.Template>" +
+                "                    <ControlTemplate TargetType='Thumb'>" +
+                "                      <Border Background='#88909090' CornerRadius='3' Margin='1,2,1,2'/>" +
+                "                    </ControlTemplate>" +
+                "                  </Thumb.Template>" +
+                "                </Thumb>" +
+                "              </Track.Thumb>" +
+                "              <Track.IncreaseRepeatButton>" +
+                "                <RepeatButton Opacity='0' Focusable='False'/>" +
+                "              </Track.IncreaseRepeatButton>" +
+                "            </Track>" +
+                "          </Grid>" +
+                "        </ControlTemplate>" +
+                "      </Setter.Value>" +
+                "    </Setter>" +
+                "  </Style>" +
+                "</ResourceDictionary>";
+
+            try
+            {
+                var rd = (ResourceDictionary)System.Windows.Markup.XamlReader.Parse(xaml);
+                _editor.Resources.MergedDictionaries.Add(rd);
+            }
+            catch { }
         }
     }
 }

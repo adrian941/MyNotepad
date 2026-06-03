@@ -53,7 +53,6 @@ namespace MinimalNotepad.Formatting
                 if (blockTop >= blockBottom) continue;
 
                 double w = textView.ActualWidth;
-                // Outer rounded border spans the full width
                 dc.DrawRoundedRectangle(null, EdgePen,
                     new Rect(0.5, blockTop + 0.5, Math.Max(0, w - 1), blockBottom - blockTop - 1),
                     CornerRadius, CornerRadius);
@@ -61,7 +60,8 @@ namespace MinimalNotepad.Formatting
         }
 
         static void DrawBand(TextView tv, DrawingContext dc, int fromLine, int toLine, Brush bg,
-                             int firstVis, int lastVis, ref double blockTop, ref double blockBottom)
+                             int firstVis, int lastVis,
+                             ref double blockTop, ref double blockBottom)
         {
             int visFrom = Math.Max(fromLine, firstVis);
             int visTo   = Math.Min(toLine,   lastVis);

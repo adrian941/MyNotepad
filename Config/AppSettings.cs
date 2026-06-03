@@ -6,7 +6,7 @@ namespace MinimalNotepad.Config
         public double WindowTop           { get; set; } = 100;
         public double WindowWidth         { get; set; } = 800;
         public double WindowHeight        { get; set; } = 600;
-        public double FontSize            { get; set; } = 12;
-        public bool   SaveGlobalClipboard { get; set; } = false;
+        public double FontSize               { get; set; } = 12;
+        public bool   SaveGlobalClipboard   { get; set; } = false;
     }
 }
