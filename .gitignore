@@ -419,3 +419,5 @@ FodyWeavers.xsd
  
 # Claude AI local files
 /.claude/
+
+*.png
