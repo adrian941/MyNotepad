@@ -22,6 +22,8 @@ namespace MinimalNotepad
         private readonly IReadOnlyDictionary<int, string> _highlightColorMap;
         private readonly IReadOnlyDictionary<int, string> _darkTextColorMap;
         private readonly IReadOnlyDictionary<int, string> _strongHighlightMap;
+        private readonly IReadOnlyDictionary<int, string> _codeHighlightMap;
+        private readonly IReadOnlyDictionary<int, string> _codeStrongHighlightMap;
         private readonly IReadOnlyList<ColorEntry>        _colorEntries;
         private readonly List<NotepadWindow>      _allWindows;
 
@@ -51,13 +53,15 @@ namespace MinimalNotepad
             double offsetX = -1,
             double offsetY = -1)
         {
-            var (textColorMap, highlightColorMap, darkTextColorMap, strongHighlightMap) = ConfigLoader.BuildColorMaps(colorEntries);
+            var (textColorMap, highlightColorMap, darkTextColorMap, strongHighlightMap, codeHighlightMap, codeStrongHighlightMap) = ConfigLoader.BuildColorMaps(colorEntries);
             _settings          = settings;
             _settingsFile      = settingsFile;
             _textColorMap      = textColorMap;
             _highlightColorMap = highlightColorMap;
             _darkTextColorMap  = darkTextColorMap;
-            _strongHighlightMap = strongHighlightMap;
+            _strongHighlightMap     = strongHighlightMap;
+            _codeHighlightMap       = codeHighlightMap;
+            _codeStrongHighlightMap = codeStrongHighlightMap;
             _colorEntries      = colorEntries;
             _allWindows        = allWindows;
 
@@ -188,7 +192,7 @@ namespace MinimalNotepad
         void InitializeFormatting()
         {
             _fmtManager           = new FormattingManager(_editor.Document);
-            _codeColorizer        = new CodeSyntaxColorizer();
+            _codeColorizer        = new CodeSyntaxColorizer(_fmtManager, _highlightColorMap, _strongHighlightMap, _codeHighlightMap, _codeStrongHighlightMap);
             _codeRenderer         = new CodeBlockBackgroundRenderer();
             _codePaddingGenerator = new CodeBlockPaddingGenerator();
 

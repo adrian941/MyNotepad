@@ -79,27 +79,33 @@ namespace MinimalNotepad.Config
 
         // Derives the fast-lookup hex dictionaries from any list of ColorEntry.
         public static (Dictionary<int, string> TextColors, Dictionary<int, string> Highlights,
-                        Dictionary<int, string> DarkTextColors, Dictionary<int, string> StrongHighlights)
+                        Dictionary<int, string> DarkTextColors, Dictionary<int, string> StrongHighlights,
+                        Dictionary<int, string> CodeHighlights, Dictionary<int, string> CodeStrongHighlights)
             BuildColorMaps(IEnumerable<ColorEntry> entries)
         {
-            var textColors       = new Dictionary<int, string>();
-            var highlights       = new Dictionary<int, string>();
-            var darkTextColors   = new Dictionary<int, string>();
-            var strongHighlights = new Dictionary<int, string>();
+            var textColors            = new Dictionary<int, string>();
+            var highlights            = new Dictionary<int, string>();
+            var darkTextColors        = new Dictionary<int, string>();
+            var strongHighlights      = new Dictionary<int, string>();
+            var codeHighlights        = new Dictionary<int, string>();
+            var codeStrongHighlights  = new Dictionary<int, string>();
             foreach (var entry in entries)
             {
                 if (entry.ColorHex == null) continue;
-                if (entry.TypeId == 1) textColors[entry.KeyNumber]       = entry.ColorHex;
-                if (entry.TypeId == 2) highlights[entry.KeyNumber]       = entry.ColorHex;
-                if (entry.TypeId == 3) darkTextColors[entry.KeyNumber]   = entry.ColorHex;
-                if (entry.TypeId == 4) strongHighlights[entry.KeyNumber] = entry.ColorHex;
+                if (entry.TypeId == 1) textColors[entry.KeyNumber]           = entry.ColorHex;
+                if (entry.TypeId == 2) highlights[entry.KeyNumber]           = entry.ColorHex;
+                if (entry.TypeId == 3) darkTextColors[entry.KeyNumber]       = entry.ColorHex;
+                if (entry.TypeId == 4) strongHighlights[entry.KeyNumber]     = entry.ColorHex;
+                if (entry.TypeId == 5) codeHighlights[entry.KeyNumber]       = entry.ColorHex;
+                if (entry.TypeId == 6) codeStrongHighlights[entry.KeyNumber] = entry.ColorHex;
             }
-            return (textColors, highlights, darkTextColors, strongHighlights);
+            return (textColors, highlights, darkTextColors, strongHighlights, codeHighlights, codeStrongHighlights);
         }
 
         // Overload kept for callers that still hold a ColorConfig.
         public static (Dictionary<int, string> TextColors, Dictionary<int, string> Highlights,
-                        Dictionary<int, string> DarkTextColors, Dictionary<int, string> StrongHighlights)
+                        Dictionary<int, string> DarkTextColors, Dictionary<int, string> StrongHighlights,
+                        Dictionary<int, string> CodeHighlights, Dictionary<int, string> CodeStrongHighlights)
             BuildColorMaps(ColorConfig config) => BuildColorMaps(config.Colors);
 
         static ColorConfig BuildDefaultColorConfig() => new()
@@ -133,6 +139,20 @@ namespace MinimalNotepad.Config
                 new() { KeyNumber = 8, TypeId = 4, ColorHex = "#FFCC80", Name = "Strong Orange" },
                 new() { KeyNumber = 9, TypeId = 4, ColorHex = "#E30613", Name = "Strong Red"    },
                 new() { KeyNumber = 0, TypeId = 4, ColorHex = "#CE93D8", Name = "Strong Violet" },
+
+                // ── Code block highlights (typeId = 5) ── saturated variants for Ctrl+6…9,0 in code ──
+                new() { KeyNumber = 6, TypeId = 5, ColorHex = "#6AB86A", Name = "Code Green"  },
+                new() { KeyNumber = 7, TypeId = 5, ColorHex = "#5A9DD8", Name = "Code Blue"   },
+                new() { KeyNumber = 8, TypeId = 5, ColorHex = "#E0A030", Name = "Code Orange" },
+                new() { KeyNumber = 9, TypeId = 5, ColorHex = "#E05050", Name = "Code Red"    },
+                new() { KeyNumber = 0, TypeId = 5, ColorHex = "#B070D8", Name = "Code Violet" },
+
+                // ── Code block strong highlights (typeId = 6) ── darker variants for Ctrl+Shift+6…9,0 in code ──
+                new() { KeyNumber = 6, TypeId = 6, ColorHex = "#4A8B4A", Name = "Code Strong Green"  },
+                new() { KeyNumber = 7, TypeId = 6, ColorHex = "#3A78BE", Name = "Code Strong Blue"   },
+                new() { KeyNumber = 8, TypeId = 6, ColorHex = "#C07820", Name = "Code Strong Orange" },
+                new() { KeyNumber = 9, TypeId = 6, ColorHex = "#CC4040", Name = "Code Strong Red"    },
+                new() { KeyNumber = 0, TypeId = 6, ColorHex = "#9050C0", Name = "Code Strong Violet" },
             }
         };
     }

@@ -8,7 +8,12 @@
       "PowerShell(Stop-Process *)",
       "PowerShell(Start-Process \"D:\\\\Work\\\\OtherRepos\\\\MyNotepad\\\\bin\\\\Debug\\\\net10.0-windows\\\\MyNotepad.exe\")",
       "PowerShell(Remove-Item *)",
-      "Bash(start \"bin\\\\Debug\\\\net10.0-windows\\\\MyNotepad.exe\")"
+      "Bash(start \"bin\\\\Debug\\\\net10.0-windows\\\\MyNotepad.exe\")",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\Work\\\\OtherRepos\\\\MyNotepad\" -Recurse -File | Where-Object { $_.Extension -match '\\\\.\\(js|html|css|ts|vue|py|json\\)$' } | Select-Object FullName)",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\Work\\\\OtherRepos\\\\MyNotepad\" -File | Where-Object { $_.Extension -match '\\\\.\\(cs|xaml|csproj\\)$' } | Select-Object FullName)",
+      "PowerShell(cd \"D:\\\\Work\\\\OtherRepos\\\\MyNotepad\" && dotnet build -c Debug --no-restore 2>&1 | Where-Object { $_ -match 'error|warning|succeeded' } | Select-Object -First 25)",
+      "Bash(cd D:\\\\\\\\Work\\\\\\\\OtherRepos\\\\\\\\MyNotepad)",
+      "Bash(dotnet clean *)"
     ]
   }
 }
