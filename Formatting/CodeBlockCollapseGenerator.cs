@@ -1,17 +1,19 @@
-using System.Globalization;
 using System.Linq;
-using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.TextFormatting;
 using ICSharpCode.AvalonEdit.Folding;
 using ICSharpCode.AvalonEdit.Rendering;
 
 namespace MinimalNotepad.Formatting
 {
-    // Replaces AvalonEdit's default FoldingElementGenerator with a non-interactive
-    // version. FoldingManager still manages the HeightTree collapsing (required),
-    // but we render "  ···" as plain text instead of a clickable element.
+    // Renders a non-interactive "  ···" indicator for folded code blocks instead of
+    // AvalonEdit's clickable [···] box. We keep the built-in FoldingElementGenerator
+    // installed (it does the HeightTree collapse + TextView registration) but insert
+    // this generator at index 0 so it wins the offset tie and supplies the visual.
     class CodeBlockCollapseGenerator : VisualLineElementGenerator
     {
+        static readonly Brush MarkerBrush = MakeFrozen(Color.FromRgb(0x85, 0x99, 0xAA));
+
         readonly FoldingManager _fm;
 
         public CodeBlockCollapseGenerator(FoldingManager fm) => _fm = fm;
@@ -36,23 +38,18 @@ namespace MinimalNotepad.Formatting
             int docLen = section.EndOffset - section.StartOffset;
             if (docLen <= 0) return null;
 
-            var props    = CurrentContext.GlobalTextRunProperties;
-            double size  = props?.FontRenderingEmSize > 0 ? props.FontRenderingEmSize : 13.0;
-            var typeface = props?.Typeface ?? new Typeface("Consolas");
+            // Build a TextLine ourselves with a custom gray foreground. We must use the
+            // (TextLine, int) constructor: FormattedTextElement.CreateTextRun only honours
+            // a pre-built TextLine — the (FormattedText, int) overload leaves its `text`
+            // field null and crashes in PrepareText.
+            var props = new VisualLineElementTextRunProperties(CurrentContext.GlobalTextRunProperties);
+            props.SetForegroundBrush(MarkerBrush);
 
-            var brush = new SolidColorBrush(Color.FromRgb(0x85, 0x99, 0xAA));
-            brush.Freeze();
-
-            var ft = new FormattedText(
-                "  ···",
-                CultureInfo.InvariantCulture,
-                FlowDirection.LeftToRight,
-                typeface,
-                size,
-                brush,
-                1.0);
-
-            return new FormattedTextElement(ft, docLen);
+            var formatter = TextFormatter.Create();
+            var line = FormattedTextElement.PrepareText(formatter, "  ···", props);
+            return new FormattedTextElement(line, docLen);
         }
+
+        static Brush MakeFrozen(Color c) { var b = new SolidColorBrush(c); b.Freeze(); return b; }
     }
 }

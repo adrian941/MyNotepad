@@ -72,14 +72,28 @@ namespace MinimalNotepad.Formatting
         public static void Save(string name, string plainText, string? richJson)
         {
             EnsureFolder();
+            File.WriteAllText(GetFilePath(name), SerializeDto(plainText, richJson));
+            // SavedFilesChanged fires via FileSystemWatcher
+        }
+
+        /// <summary>
+        /// Writes a .mnp document to an arbitrary absolute path (used when a file was
+        /// opened from outside the managed Saved folder — Ctrl+S then saves in-place
+        /// instead of dumping a copy into the library).
+        /// </summary>
+        public static void SaveToPath(string fullPath, string plainText, string? richJson)
+        {
+            File.WriteAllText(fullPath, SerializeDto(plainText, richJson));
+        }
+
+        static string SerializeDto(string plainText, string? richJson)
+        {
             var dto = new SavedFileDto
             {
                 PlainText = plainText,
                 RichData  = richJson != null ? JsonDocument.Parse(richJson).RootElement : null
             };
-            var json = JsonSerializer.Serialize(dto, _writeOpts);
-            File.WriteAllText(GetFilePath(name), json);
-            // SavedFilesChanged fires via FileSystemWatcher
+            return JsonSerializer.Serialize(dto, _writeOpts);
         }
 
         public static void Delete(string name)
