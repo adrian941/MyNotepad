@@ -129,6 +129,10 @@ namespace MinimalNotepad
         readonly TextBlock    _titleLabel;
         Popup?                _formatPopup;
         ToggleButton?         _fmtBoldBtn, _fmtItalicBtn, _fmtUnderBtn, _fmtStrikeBtn;
+        Brush?                _savedSelectionBrush;
+        Brush?                _savedSelectionForeground;
+        static readonly Brush SelectionOrange = FreezeB(new SolidColorBrush(Color.FromArgb(150, 0xFF, 0xC0, 0x40)));
+        static Brush FreezeB(SolidColorBrush b) { b.Freeze(); return b; }
 
         // ── Constructor ───────────────────────────────────────────────────────
 
@@ -157,6 +161,7 @@ namespace MinimalNotepad
 
             _instance = null;
             if (_target == null) return;
+            RestoreSelectionStyle(_target);
             _target.Document.Changed -= OnDocumentChanged;
             if (_renderer != null)
             {
@@ -174,6 +179,7 @@ namespace MinimalNotepad
 
             if (_target != null)
             {
+                RestoreSelectionStyle(_target);
                 _target.Document.Changed -= OnDocumentChanged;
                 if (_renderer != null)
                 {
@@ -184,9 +190,24 @@ namespace MinimalNotepad
             }
 
             _target   = editor;
+            ApplySelectionStyle(_target);
             _renderer = new MatchHighlightRenderer();
             _target.TextArea.TextView.BackgroundRenderers.Add(_renderer);
             _target.Document.Changed += OnDocumentChanged;
+        }
+
+        void ApplySelectionStyle(TextEditor editor)
+        {
+            _savedSelectionBrush      = editor.TextArea.SelectionBrush;
+            _savedSelectionForeground = editor.TextArea.SelectionForeground;
+            editor.TextArea.SelectionBrush      = SelectionOrange;
+            editor.TextArea.SelectionForeground = Brushes.Black;
+        }
+
+        void RestoreSelectionStyle(TextEditor editor)
+        {
+            editor.TextArea.SelectionBrush      = _savedSelectionBrush;
+            editor.TextArea.SelectionForeground = _savedSelectionForeground;
         }
 
         void SetMode(bool replaceMode)
@@ -288,8 +309,7 @@ namespace MinimalNotepad
         {
             if (_target == null || _currentIdx < 0 || _currentIdx >= _matches.Count) return;
             var (start, len) = _matches[_currentIdx];
-            _target.CaretOffset     = start;
-            _target.SelectionLength = 0;
+            _target.Select(start, len);
             _target.TextArea.Caret.BringCaretToView();
             _renderer?.Update(_matches, _currentIdx);
             RedrawHighlight();

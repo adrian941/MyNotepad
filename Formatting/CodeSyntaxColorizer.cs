@@ -220,7 +220,8 @@ namespace MinimalNotepad.Formatting
             var spans = _fmtManager.Spans;
             if (spans.Count == 0) return;
 
-            // Collect segment boundaries within this line from spans that have BackColor
+            // Collect segment boundaries from spans with BackColor only
+            // (ForeColor is intentionally ignored in code blocks — syntax coloring has priority)
             var pts = new SortedSet<int> { line.Offset, line.EndOffset };
             foreach (var span in spans)
             {
@@ -251,7 +252,6 @@ namespace MinimalNotepad.Formatting
 
                 string codeBackHex = _highlightRemap.TryGetValue(backHex, out var mapped) ? mapped : backHex;
                 var codeBg = BrushFor(codeBackHex);
-
                 ChangeLinePart(segStart, segEnd, el =>
                 {
                     el.TextRunProperties.SetBackgroundBrush(codeBg);

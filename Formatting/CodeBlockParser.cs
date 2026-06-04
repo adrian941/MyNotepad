@@ -6,6 +6,7 @@ namespace MinimalNotepad.Formatting
     record CodeBlockRegion(
         string Language,
         bool   LineNumbers,
+        bool   StartMinimized,
         int FenceOpenLine,   // 1-based
         int FenceCloseLine,  // 1-based
         int ContentStart,    // doc offset of first char after opening fence line
@@ -21,6 +22,7 @@ namespace MinimalNotepad.Formatting
 
             string? openLang     = null;
             bool    openLineNums = false;
+            bool    openMin      = false;
             int     openLine     = 0;
             int     contentStart = 0;
 
@@ -33,14 +35,18 @@ namespace MinimalNotepad.Formatting
                 {
                     if (text.Length > 3 && text.StartsWith("```"))
                     {
-                        string tag  = text.Substring(3).Trim();
-                        int    ci   = tag.IndexOf(':');
-                        string lang = ci >= 0 ? tag.Substring(0, ci) : tag;
-                        bool   lnOn = ci >= 0 && tag.Substring(ci + 1) == "ln";
+                        string tag   = text.Substring(3).Trim();
+                        int    ci    = tag.IndexOf(':');
+                        string lang  = ci >= 0 ? tag.Substring(0, ci) : tag;
+                        string flags = ci >= 0 ? tag.Substring(ci + 1) : "";
+                        var    fArr  = flags.Split(':', System.StringSplitOptions.RemoveEmptyEntries);
+                        bool   lnOn  = System.Array.IndexOf(fArr, "ln")  >= 0;
+                        bool   minOn = System.Array.IndexOf(fArr, "min") >= 0;
                         if (lang.Length > 0 && IsValidLangTag(lang))
                         {
                             openLang     = lang;
                             openLineNums = lnOn;
+                            openMin      = minOn;
                             openLine     = ln;
                             contentStart = line.Offset + line.Length + line.DelimiterLength;
                         }
@@ -53,11 +59,13 @@ namespace MinimalNotepad.Formatting
                         result.Add(new CodeBlockRegion(
                             openLang,
                             openLineNums,
+                            openMin,
                             openLine,
                             ln,
                             contentStart,
                             line.Offset));
                         openLang = null;
+                        openMin  = false;
                     }
                 }
             }

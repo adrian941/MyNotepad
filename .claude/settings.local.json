@@ -13,7 +13,9 @@
       "PowerShell(Get-ChildItem -Path \"D:\\\\Work\\\\OtherRepos\\\\MyNotepad\" -File | Where-Object { $_.Extension -match '\\\\.\\(cs|xaml|csproj\\)$' } | Select-Object FullName)",
       "PowerShell(cd \"D:\\\\Work\\\\OtherRepos\\\\MyNotepad\" && dotnet build -c Debug --no-restore 2>&1 | Where-Object { $_ -match 'error|warning|succeeded' } | Select-Object -First 25)",
       "Bash(cd D:\\\\\\\\Work\\\\\\\\OtherRepos\\\\\\\\MyNotepad)",
-      "Bash(dotnet clean *)"
+      "Bash(dotnet clean *)",
+      "Bash(cd \"D:\\\\\\\\Work\\\\\\\\OtherRepos\\\\\\\\MyNotepad\")",
+      "Bash(dotnet run *)"
     ]
   }
 }

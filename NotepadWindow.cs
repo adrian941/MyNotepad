@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using ICSharpCode.AvalonEdit;
+using ICSharpCode.AvalonEdit.Folding;
 using ICSharpCode.AvalonEdit.Highlighting;
 using MinimalNotepad.Config;
 using MinimalNotepad.Formatting;
@@ -35,6 +36,8 @@ namespace MinimalNotepad
         public string? SavedFileName => _savedFileName;
         private TextEditor _editor        = null!;
         private FormattingManager _fmtManager = null!;
+        private FoldingManager                _foldingManager         = null!;
+        private readonly List<FoldingSection> _codeBlockFoldings      = new();
         private CodeSyntaxColorizer           _codeColorizer          = null!;
         private CodeBlockBackgroundRenderer    _codeRenderer              = null!;
         private CodeBlockLineNumberRenderer    _codeLineNumberRenderer    = null!;
@@ -75,6 +78,9 @@ namespace MinimalNotepad
             // Global clipboard monitor — started once; subsequent windows are no-ops
             GlobalClipboardMonitor.IsEnabled = _settings.SaveGlobalClipboard;
             GlobalClipboardMonitor.EnabledChanged += OnGlobalClipboardEnabledChanged;
+
+            // Ensure code blocks are parsed after window is fully loaded
+            Loaded += (_, _) => ReparseCodeBlocks();
         }
 
         void OnGlobalClipboardEnabledChanged(bool enabled)
@@ -191,6 +197,13 @@ namespace MinimalNotepad
 
         void InitializeFormatting()
         {
+            _foldingManager = FoldingManager.Install(_editor.TextArea);
+            // Remove AvalonEdit's built-in fold margin (the +/- button) but keep FoldingElementGenerator
+            // — FoldingElementGenerator is what actually collapses lines in AvalonEdit's HeightTree.
+            // Without it, IsFolded=true sections are NOT collapsed and custom generators that span
+            // multiple lines will throw "Line N was skipped ... but it is not collapsed".
+            var foldMargin = _editor.TextArea.LeftMargins.OfType<FoldingMargin>().FirstOrDefault();
+            if (foldMargin != null) _editor.TextArea.LeftMargins.Remove(foldMargin);
             _fmtManager           = new FormattingManager(_editor.Document);
             _codeColorizer        = new CodeSyntaxColorizer(_fmtManager, _highlightColorMap, _strongHighlightMap, _codeHighlightMap, _codeStrongHighlightMap);
             _codeRenderer         = new CodeBlockBackgroundRenderer();
@@ -209,6 +222,7 @@ namespace MinimalNotepad
             _editor.TextArea.TextView.LineTransformers.Add(new MinimalNotepad.Formatting.RichTextColorizer(_fmtManager));
             _editor.TextArea.TextView.LineTransformers.Add(_codeColorizer);
             _editor.TextArea.TextView.LineTransformers.Add(_codeFontSizeTransformer);
+            _editor.TextArea.TextView.LineTransformers.Add(new MinimalNotepad.Formatting.SelectionForegroundOverride(_editor.TextArea));
             _editor.TextArea.TextView.ElementGenerators.Add(new NonBreakingHyphenGenerator());
 
             _copyOverlay = new CodeBlockCopyOverlay(
@@ -224,6 +238,26 @@ namespace MinimalNotepad
         void ReparseCodeBlocks()
         {
             var regions = CodeBlockParser.Parse(_editor.Document);
+
+            // Rebuild FoldingManager sections for StartMinimized blocks (> 20 content lines)
+            foreach (var f in _codeBlockFoldings) _foldingManager.RemoveFolding(f);
+            _codeBlockFoldings.Clear();
+            foreach (var region in regions)
+            {
+                if (!region.StartMinimized) continue;
+                int contentLines = region.FenceCloseLine - region.FenceOpenLine - 1;
+                if (contentLines <= 20) continue;
+                int line21Num = region.FenceOpenLine + 21;
+                if (line21Num >= region.FenceCloseLine) continue;
+                int startOffset = _editor.Document.GetLineByNumber(line21Num).Offset;
+                int endOffset   = _editor.Document.GetLineByNumber(region.FenceCloseLine).Offset;
+                if (startOffset >= endOffset) continue;
+                var section = _foldingManager.CreateFolding(startOffset, endOffset);
+                section.Title    = " ···";
+                section.IsFolded = true;
+                _codeBlockFoldings.Add(section);
+            }
+
             _codeColorizer.UpdateBlocks(_editor.Document, regions);
             _codeRenderer.UpdateRegions(regions);
             _codePaddingGenerator.UpdateRegions(regions);
