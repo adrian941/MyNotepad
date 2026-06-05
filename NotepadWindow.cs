@@ -524,6 +524,11 @@ namespace MinimalNotepad
             if (e.Key == Key.U)  { ApplyFormatting(_fmtManager.ToggleUnderline);     e.Handled = true; return; }
             if (e.Key == Key.F5) { ApplyFormatting(_fmtManager.ToggleStrikethrough); e.Handled = true; return; }
 
+            // ── Code block flag shortcuts (only when caret is inside a block) ──
+            if (e.Key == Key.M) { var b = GetCodeBlockAtCaret(); if (b != null) { ToggleFenceFlag(b, "min"); e.Handled = true; return; } }
+            if (e.Key == Key.L) { var b = GetCodeBlockAtCaret(); if (b != null) { ToggleFenceFlag(b, "ln");  e.Handled = true; return; } }
+            if (e.Key == Key.G) { var b = GetCodeBlockAtCaret(); if (b != null) { GoToLineInBlock(b); e.Handled = true; return; } }
+
             // ── Text color: Ctrl+1 … Ctrl+5 ───────────────────────────────────
             int digitKey = DigitKeyNumber(e.Key);
             bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
@@ -730,6 +735,55 @@ namespace MinimalNotepad
                 new FormattingUndoOperation(_fmtManager, before, after, _editor.TextArea.TextView));
 
             _editor.TextArea.TextView.Redraw();
+        }
+
+        // ── Code block helpers ────────────────────────────────────────────────
+
+        CodeBlockRegion? GetCodeBlockAtCaret()
+        {
+            int offset = _editor.TextArea.Caret.Offset;
+            foreach (var b in _codeColorizer.CurrentBlocks)
+                if (offset >= b.ContentStart && offset <= b.ContentEnd) return b;
+            return null;
+        }
+
+        void ToggleFenceFlag(CodeBlockRegion block, string flag, bool? forceOn = null)
+        {
+            var    doc       = _editor.Document;
+            var    fenceLine = doc.GetLineByNumber(block.FenceOpenLine);
+            string lineText  = doc.GetText(fenceLine.Offset, fenceLine.Length);
+
+            string tag   = lineText.Substring(3).Trim();  // strip "```" prefix
+            int    ci    = tag.IndexOf(':');
+            string lang  = ci >= 0 ? tag.Substring(0, ci) : tag;
+            string flags = ci >= 0 ? tag.Substring(ci + 1) : "";
+            var    fList = new List<string>(flags.Split(':', StringSplitOptions.RemoveEmptyEntries));
+
+            bool hasFlag      = fList.Contains(flag);
+            bool shouldEnable = forceOn ?? !hasFlag;
+            if (shouldEnable == hasFlag) return;
+
+            if (shouldEnable) fList.Add(flag);
+            else              fList.Remove(flag);
+
+            string newLine = "```" + lang + (fList.Count > 0 ? ":" + string.Join(":", fList) : "");
+            doc.Replace(fenceLine.Offset, fenceLine.Length, newLine);
+        }
+
+        void GoToLineInBlock(CodeBlockRegion block)
+        {
+            int maxLines = block.FenceCloseLine - block.FenceOpenLine - 1;
+            if (maxLines < 1) return;
+
+            ToggleFenceFlag(block, "ln", forceOn: true);
+
+            var dlg = new CodeBlockGoToLineDialog(maxLines, this);
+            if (dlg.ShowDialog() != true || dlg.ResultLine == null) return;
+
+            int docLineNum = block.FenceOpenLine + dlg.ResultLine.Value;
+            var docLine    = _editor.Document.GetLineByNumber(docLineNum);
+            _editor.Select(docLine.Offset, docLine.Length);
+            _editor.ScrollToLine(docLineNum);
         }
 
         // ── Move line(s) up or down (Alt+Up / Alt+Down) ───────────────────────
