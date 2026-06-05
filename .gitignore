@@ -418,6 +418,7 @@ FodyWeavers.xsd
 *.msp
  
 # Claude AI local files
-/.claude/
+.claude/
 
 *.png
+/.claude/settings.local.json
