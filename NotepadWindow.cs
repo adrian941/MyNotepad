@@ -715,12 +715,15 @@ namespace MinimalNotepad
 
         void ApplyFormatting(Action<int, int> action)
         {
-            int start = _editor.SelectionStart;
-            int len   = _editor.SelectionLength;
-            if (len == 0) return;
+            var selection = _editor.TextArea.Selection;
+            if (selection.IsEmpty) return;
 
             var before = _fmtManager.TakeSnapshot();
-            action(start, start + len);
+            foreach (var segment in selection.Segments)
+            {
+                if (segment.StartOffset < segment.EndOffset)
+                    action(segment.StartOffset, segment.EndOffset);
+            }
             var after = _fmtManager.TakeSnapshot();
 
             _editor.Document.UndoStack.Push(
