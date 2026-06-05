@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using ICSharpCode.AvalonEdit;
+using ICSharpCode.AvalonEdit.Folding;
 using ICSharpCode.AvalonEdit.Highlighting;
 using MinimalNotepad.Config;
 using MinimalNotepad.Formatting;
@@ -22,17 +23,23 @@ namespace MinimalNotepad
         private readonly IReadOnlyDictionary<int, string> _highlightColorMap;
         private readonly IReadOnlyDictionary<int, string> _darkTextColorMap;
         private readonly IReadOnlyDictionary<int, string> _strongHighlightMap;
+        private readonly IReadOnlyDictionary<int, string> _codeHighlightMap;
+        private readonly IReadOnlyDictionary<int, string> _codeStrongHighlightMap;
         private readonly IReadOnlyList<ColorEntry>        _colorEntries;
         private readonly List<NotepadWindow>      _allWindows;
 
         private string     _prefixTitle   = "";
-        private string?    _savedFileName = null;   // null = never saved
+        private string?    _savedFileName = null;   // null = never saved (library files: name without ext)
+        private string?    _externalPath  = null;   // non-null = opened from outside the Saved folder; Ctrl+S saves here in-place
         private bool       _isDirty       = false;  // unsaved changes since last save
         private bool       _isCodeOnlyMode = false;
 
         public string? SavedFileName => _savedFileName;
         private TextEditor _editor        = null!;
         private FormattingManager _fmtManager = null!;
+        private FoldingManager                _foldingManager         = null!;
+        private readonly List<FoldingSection> _codeBlockFoldings      = new();
+        private CodeBlockCollapseGenerator    _collapseGenerator      = null!;
         private CodeSyntaxColorizer           _codeColorizer          = null!;
         private CodeBlockBackgroundRenderer    _codeRenderer              = null!;
         private CodeBlockLineNumberRenderer    _codeLineNumberRenderer    = null!;
@@ -51,13 +58,15 @@ namespace MinimalNotepad
             double offsetX = -1,
             double offsetY = -1)
         {
-            var (textColorMap, highlightColorMap, darkTextColorMap, strongHighlightMap) = ConfigLoader.BuildColorMaps(colorEntries);
+            var (textColorMap, highlightColorMap, darkTextColorMap, strongHighlightMap, codeHighlightMap, codeStrongHighlightMap) = ConfigLoader.BuildColorMaps(colorEntries);
             _settings          = settings;
             _settingsFile      = settingsFile;
             _textColorMap      = textColorMap;
             _highlightColorMap = highlightColorMap;
             _darkTextColorMap  = darkTextColorMap;
-            _strongHighlightMap = strongHighlightMap;
+            _strongHighlightMap     = strongHighlightMap;
+            _codeHighlightMap       = codeHighlightMap;
+            _codeStrongHighlightMap = codeStrongHighlightMap;
             _colorEntries      = colorEntries;
             _allWindows        = allWindows;
 
@@ -71,6 +80,9 @@ namespace MinimalNotepad
             // Global clipboard monitor — started once; subsequent windows are no-ops
             GlobalClipboardMonitor.IsEnabled = _settings.SaveGlobalClipboard;
             GlobalClipboardMonitor.EnabledChanged += OnGlobalClipboardEnabledChanged;
+
+            // Ensure code blocks are parsed after window is fully loaded
+            Loaded += (_, _) => ReparseCodeBlocks();
         }
 
         void OnGlobalClipboardEnabledChanged(bool enabled)
@@ -187,8 +199,22 @@ namespace MinimalNotepad
 
         void InitializeFormatting()
         {
+            _foldingManager = FoldingManager.Install(_editor.TextArea);
+            // Remove the +/- fold margin button on the left.
+            var foldMargin = _editor.TextArea.LeftMargins.OfType<FoldingMargin>().FirstOrDefault();
+            if (foldMargin != null) _editor.TextArea.LeftMargins.Remove(foldMargin);
+            // Keep AvalonEdit's built-in FoldingElementGenerator in place — it implements
+            // ITextViewConnect, which is what registers the TextView with the FoldingManager so
+            // FoldingSection.IsFolded can actually collapse lines in the HeightTree. Removing it
+            // breaks collapsing entirely ("Line N skipped but not collapsed").
+            // Instead, we insert our own generator at index 0. When both report interest at the
+            // same fold offset, AvalonEdit breaks the tie in favour of the first generator in the
+            // list — so ours renders a plain non-interactive "···" while the built-in still does
+            // the HeightTree collapse work behind the scenes.
+            _collapseGenerator = new CodeBlockCollapseGenerator(_foldingManager);
+            _editor.TextArea.TextView.ElementGenerators.Insert(0, _collapseGenerator);
             _fmtManager           = new FormattingManager(_editor.Document);
-            _codeColorizer        = new CodeSyntaxColorizer();
+            _codeColorizer        = new CodeSyntaxColorizer(_fmtManager, _highlightColorMap, _strongHighlightMap, _codeHighlightMap, _codeStrongHighlightMap);
             _codeRenderer         = new CodeBlockBackgroundRenderer();
             _codePaddingGenerator = new CodeBlockPaddingGenerator();
 
@@ -205,6 +231,7 @@ namespace MinimalNotepad
             _editor.TextArea.TextView.LineTransformers.Add(new MinimalNotepad.Formatting.RichTextColorizer(_fmtManager));
             _editor.TextArea.TextView.LineTransformers.Add(_codeColorizer);
             _editor.TextArea.TextView.LineTransformers.Add(_codeFontSizeTransformer);
+            _editor.TextArea.TextView.LineTransformers.Add(new MinimalNotepad.Formatting.SelectionForegroundOverride(_editor.TextArea));
             _editor.TextArea.TextView.ElementGenerators.Add(new NonBreakingHyphenGenerator());
 
             _copyOverlay = new CodeBlockCopyOverlay(
@@ -220,6 +247,29 @@ namespace MinimalNotepad
         void ReparseCodeBlocks()
         {
             var regions = CodeBlockParser.Parse(_editor.Document);
+
+            // Rebuild FoldingManager sections for StartMinimized blocks (> 20 content lines)
+            foreach (var f in _codeBlockFoldings) _foldingManager.RemoveFolding(f);
+            _codeBlockFoldings.Clear();
+            foreach (var region in regions)
+            {
+                if (!region.StartMinimized) continue;
+                int contentLines = region.FenceCloseLine - region.FenceOpenLine - 1;
+                if (contentLines <= 20) continue;
+                int line21Num = region.FenceOpenLine + 21;
+                if (line21Num >= region.FenceCloseLine) continue;
+                int startOffset = _editor.Document.GetLineByNumber(line21Num).Offset;
+                // End at the LAST content line, not the closing fence — otherwise the
+                // FoldingSection collapses through the ``` line and it loses its gray fence
+                // background. Ending here keeps the closing fence visible.
+                int endOffset   = _editor.Document.GetLineByNumber(region.FenceCloseLine - 1).EndOffset;
+                if (startOffset >= endOffset) continue;
+                var section = _foldingManager.CreateFolding(startOffset, endOffset);
+                section.Title    = " ···";
+                section.IsFolded = true;
+                _codeBlockFoldings.Add(section);
+            }
+
             _codeColorizer.UpdateBlocks(_editor.Document, regions);
             _codeRenderer.UpdateRegions(regions);
             _codePaddingGenerator.UpdateRegions(regions);
@@ -506,7 +556,7 @@ namespace MinimalNotepad
                     && !_editor.SelectedText.Contains('\n')
                     && !_editor.SelectedText.Contains('\r')
                     ? _editor.SelectedText : null;
-                FindReplaceWindow.ShowFor(_editor, this, replaceMode: false, initialText: init, settings: _settings, settingsFile: _settingsFile);
+                FindReplaceWindow.ShowFor(_editor, this, replaceMode: false, initialText: init, settings: _settings, settingsFile: _settingsFile, fmtManager: _fmtManager, colorEntries: _colorEntries);
                 e.Handled = true;
                 return;
             }
@@ -533,7 +583,7 @@ namespace MinimalNotepad
                         && !_editor.SelectedText.Contains('\n')
                         && !_editor.SelectedText.Contains('\r')
                         ? _editor.SelectedText : null;
-                    FindReplaceWindow.ShowFor(_editor, this, replaceMode: true, initialText: init, settings: _settings, settingsFile: _settingsFile);
+                    FindReplaceWindow.ShowFor(_editor, this, replaceMode: true, initialText: init, settings: _settings, settingsFile: _settingsFile, fmtManager: _fmtManager, colorEntries: _colorEntries);
                 }
                 return;
             }
@@ -917,6 +967,7 @@ namespace MinimalNotepad
                 }
 
                 dialog.Close();
+                _externalPath  = null;   // "Save As <name>" creates a library entry; stop tracking the external path
                 _savedFileName = name;
                 SaveCurrentFile(name);
             }
@@ -943,7 +994,27 @@ namespace MinimalNotepad
             var text     = _editor.Text;
             var spans    = _fmtManager.TakeSnapshot();
             var richJson = RichClipboard.SerializeDocument(text, spans);
-            SavedFileStore.Save(name, text, richJson);
+
+            // A file opened from outside the managed Saved folder saves in-place to its
+            // original path instead of dropping a copy into the library.
+            if (_externalPath != null)
+            {
+                try
+                {
+                    SavedFileStore.SaveToPath(_externalPath, text, richJson);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, $"Could not save \"{_externalPath}\":\n{ex.Message}",
+                        "Save failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+            }
+            else
+            {
+                SavedFileStore.Save(name, text, richJson);
+            }
+
             _prefixTitle = name;
             _isDirty     = false;
             UpdateTitle();
@@ -953,8 +1024,35 @@ namespace MinimalNotepad
 
         /// <summary>
         /// Loads the saved file content into this window (replaces entire document).
+        /// Used for files in the managed Saved library — Ctrl+S saves back into the library.
         /// </summary>
         internal void LoadSavedFile(SavedFileEntry entry)
+        {
+            _externalPath = null;   // library file → save by name into the Saved folder
+            LoadEntryContent(entry);
+        }
+
+        /// <summary>
+        /// Loads a .mnp from an arbitrary path on disk (e.g. opened via file association
+        /// or the command line). Records the full path so Ctrl+S saves in-place there
+        /// instead of copying into the managed Saved library.
+        /// Falls back to <see cref="LoadSavedFile"/> behaviour if the file is actually
+        /// inside the Saved folder.
+        /// </summary>
+        internal void LoadExternalFile(string fullPath, SavedFileEntry entry)
+        {
+            // If the path is inside the managed Saved folder, treat it as a library file.
+            string savedFolder = System.IO.Path.GetFullPath(SavedFileStore.SavedFolder);
+            string thisFull     = System.IO.Path.GetFullPath(fullPath);
+            // Only files directly in the Saved folder (not subdirectories) count as library files.
+            bool inLibrary = string.Equals(
+                System.IO.Path.GetDirectoryName(thisFull), savedFolder,
+                StringComparison.OrdinalIgnoreCase);
+            _externalPath = inLibrary ? null : thisFull;
+            LoadEntryContent(entry);
+        }
+
+        void LoadEntryContent(SavedFileEntry entry)
         {
             _savedFileName        = entry.FileName;
             _prefixTitle          = entry.FileName;
@@ -1011,6 +1109,49 @@ namespace MinimalNotepad
                 callerWindow.Top + 30);
             newWin.Show();
             newWin.LoadSavedFile(entry);
+            newWin.Activate();
+        }
+
+        /// <summary>
+        /// Like <see cref="OpenOrFocusSavedFile"/> but for a file opened from an arbitrary
+        /// path (file association / command line). Saves in-place to <paramref name="fullPath"/>.
+        /// </summary>
+        internal static void OpenOrFocusExternalFile(string fullPath, SavedFileEntry entry, NotepadWindow callerWindow)
+        {
+            string thisFull = System.IO.Path.GetFullPath(fullPath);
+
+            // If already open in some window (matched by external path), focus it
+            foreach (Window w in Application.Current.Windows)
+            {
+                if (w is NotepadWindow nw && nw._externalPath != null &&
+                    string.Equals(nw._externalPath, thisFull, StringComparison.OrdinalIgnoreCase))
+                {
+                    nw.Activate();
+                    nw._editor.Focus();
+                    return;
+                }
+            }
+
+            // Reuse a trivial empty caller, else open a new window
+            if (callerWindow._savedFileName == null &&
+                callerWindow._externalPath == null &&
+                callerWindow._editor.Text.Trim().Length < 10)
+            {
+                callerWindow.LoadExternalFile(thisFull, entry);
+                callerWindow.Activate();
+                callerWindow._editor.Focus();
+                return;
+            }
+
+            var newWin = new NotepadWindow(
+                callerWindow._settings,
+                callerWindow._settingsFile,
+                callerWindow._colorEntries,
+                callerWindow._allWindows,
+                callerWindow.Left + 30,
+                callerWindow.Top + 30);
+            newWin.Show();
+            newWin.LoadExternalFile(thisFull, entry);
             newWin.Activate();
         }
 

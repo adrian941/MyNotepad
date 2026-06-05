@@ -12,6 +12,12 @@ namespace MinimalNotepad.Formatting
     {
         private List<BlockHighlighter> _blocks = new();
 
+        private readonly FormattingManager _fmtManager;
+        // Maps normal highlight hex → code-block-friendly hex (dark-mode variants)
+        private readonly Dictionary<string, string> _highlightRemap;
+        // Text color applied over any active highlight inside a code block
+        static readonly SolidColorBrush HighlightedCodeText = Freeze(new SolidColorBrush(Color.FromRgb(0x0F, 0x0F, 0x0F)));
+
         // ── VS Code Dark+ palette ─────────────────────────────────────────────
         static readonly SolidColorBrush DefaultText   = Freeze(new SolidColorBrush(Color.FromRgb(0xD4, 0xD4, 0xD4)));
         static readonly SolidColorBrush FenceText     = Freeze(new SolidColorBrush(Color.FromRgb(0xCC, 0xCC, 0xCC)));
@@ -46,6 +52,32 @@ namespace MinimalNotepad.Formatting
             RegexOptions.Compiled);
 
         // ─────────────────────────────────────────────────────────────────────
+
+        public CodeSyntaxColorizer(
+            FormattingManager fmtManager,
+            IReadOnlyDictionary<int, string> highlights,
+            IReadOnlyDictionary<int, string> strongHighlights,
+            IReadOnlyDictionary<int, string> codeHighlights,
+            IReadOnlyDictionary<int, string> codeStrongHighlights)
+        {
+            _fmtManager     = fmtManager;
+            _highlightRemap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            // Build remap (inverted): typeId=2 hex → typeId=6 hex, and typeId=4 hex → typeId=5 hex
+            foreach (var kv in highlights)
+                if (codeStrongHighlights.TryGetValue(kv.Key, out var codeHex))
+                    _highlightRemap[kv.Value] = codeHex;
+            foreach (var kv in strongHighlights)
+                if (codeHighlights.TryGetValue(kv.Key, out var codeHex))
+                    _highlightRemap[kv.Value] = codeHex;
+        }
+
+        static SolidColorBrush BrushFor(string hex)
+        {
+            var color = (Color)System.Windows.Media.ColorConverter.ConvertFromString(hex);
+            var b = new SolidColorBrush(color);
+            b.Freeze();
+            return b;
+        }
 
         sealed class BlockHighlighter
         {
@@ -122,12 +154,11 @@ namespace MinimalNotepad.Formatting
                 int contentEnd   = region.FenceCloseLine - 1;
                 if (ln < contentStart || ln > contentEnd) continue;
 
-                // ── Step 1: default foreground, strip user highlights ─────────
+                // ── Step 1: default foreground (user highlights preserved) ───
                 if (line.Length > 0)
                     ChangeLinePart(line.Offset, line.EndOffset, el =>
                     {
                         el.TextRunProperties.SetForegroundBrush(DefaultText);
-                        el.TextRunProperties.SetBackgroundBrush(null);
                     });
 
                 if (block.Highlighter == null) return;
@@ -175,7 +206,57 @@ namespace MinimalNotepad.Formatting
                             el.TextRunProperties.SetForegroundBrush(CtrlFlowBrush));
                     }
                 }
+
+                // ── Step 5: remap user highlights for dark-mode code block ─────
+                ApplyCodeBlockHighlights(line);
                 return;
+            }
+        }
+
+        // ── Remap user highlights to dark-mode-friendly colors inside code blocks ─
+
+        void ApplyCodeBlockHighlights(DocumentLine line)
+        {
+            var spans = _fmtManager.Spans;
+            if (spans.Count == 0) return;
+
+            // Collect segment boundaries from spans with BackColor only
+            // (ForeColor is intentionally ignored in code blocks — syntax coloring has priority)
+            var pts = new SortedSet<int> { line.Offset, line.EndOffset };
+            foreach (var span in spans)
+            {
+                if (span.IsDeleted || span.IsEmpty || span.Format.BackColorHex == null) continue;
+                int s = span.Start, e = span.End;
+                if (s < line.EndOffset && e > line.Offset)
+                {
+                    if (s > line.Offset)    pts.Add(s);
+                    if (e < line.EndOffset) pts.Add(e);
+                }
+            }
+
+            var points = new List<int>(pts);
+            for (int i = 0; i < points.Count - 1; i++)
+            {
+                int segStart = points[i], segEnd = points[i + 1];
+                string? backHex = null;
+                foreach (var span in spans)
+                {
+                    if (span.IsDeleted || span.IsEmpty || span.Format.BackColorHex == null) continue;
+                    if (span.Start <= segStart && span.End >= segEnd)
+                    {
+                        backHex = span.Format.BackColorHex;
+                        break;
+                    }
+                }
+                if (backHex == null) continue;
+
+                string codeBackHex = _highlightRemap.TryGetValue(backHex, out var mapped) ? mapped : backHex;
+                var codeBg = BrushFor(codeBackHex);
+                ChangeLinePart(segStart, segEnd, el =>
+                {
+                    el.TextRunProperties.SetBackgroundBrush(codeBg);
+                    el.TextRunProperties.SetForegroundBrush(HighlightedCodeText);
+                });
             }
         }
 

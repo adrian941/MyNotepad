@@ -172,6 +172,18 @@ namespace MinimalNotepad.Formatting
             ModifyRange(start, end, f => f.Strikethrough = !allStrike);
         }
 
+        public void ClearFormatting(int start, int end)
+            => ModifyRange(start, end, f =>
+            {
+                f.Bold = false; f.Italic = false; f.Underline = false; f.Strikethrough = false;
+                f.ForeColorHex = null; f.BackColorHex = null;
+            });
+
+        public bool IsRangeBold(int s, int e)          => IsUniform(s, e, f => f.Bold);
+        public bool IsRangeItalic(int s, int e)        => IsUniform(s, e, f => f.Italic);
+        public bool IsRangeUnderline(int s, int e)     => IsUniform(s, e, f => f.Underline);
+        public bool IsRangeStrikethrough(int s, int e) => IsUniform(s, e, f => f.Strikethrough);
+
         public void ToggleForeColor(int start, int end, string targetHex)
         {
             string? current = GetUniformColor(start, end, f => f.ForeColorHex);

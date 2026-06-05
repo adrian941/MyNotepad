@@ -110,12 +110,13 @@ namespace MinimalNotepad
                                                 colorConfig.Colors, allWindows);
             firstWindow.Show();
 
-            // If launched via file association, load the file into the first window
+            // If launched via file association, load the file into the first window.
+            // Use the external-path loader so Ctrl+S saves back to the file's real location.
             if (fileToOpen != null)
             {
                 var entry = SavedFileStore.LoadFromPath(fileToOpen);
                 if (entry != null)
-                    firstWindow.LoadSavedFile(entry);
+                    firstWindow.LoadExternalFile(fileToOpen, entry);
             }
 
             app.Run();
@@ -147,14 +148,14 @@ namespace MinimalNotepad
             var refWin = allWindows.Count > 0 ? allWindows[0] : null;
             if (refWin != null)
             {
-                NotepadWindow.OpenOrFocusSavedFile(entry, refWin);
+                NotepadWindow.OpenOrFocusExternalFile(filePath, entry, refWin);
             }
             else
             {
                 var newWin = new NotepadWindow(settings, settingsFile,
                                                colorEntries, allWindows);
                 newWin.Show();
-                newWin.LoadSavedFile(entry);
+                newWin.LoadExternalFile(filePath, entry);
                 newWin.Activate();
             }
         }
