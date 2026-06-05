@@ -110,5 +110,14 @@ namespace MinimalNotepad.Formatting
             Save();
             HistoryChanged?.Invoke();
         }
+
+        public static void InsertAt(int index, ClipboardEntry entry)
+        {
+            index = Math.Clamp(index, 0, _entries.Count);
+            _entries.Insert(index, entry);
+            if (_entries.Count > MaxEntries) _entries.RemoveAt(MaxEntries);
+            Save();
+            HistoryChanged?.Invoke();
+        }
     }
 }

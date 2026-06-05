@@ -102,6 +102,11 @@ namespace MinimalNotepad.Formatting
             // SavedFilesChanged fires via FileSystemWatcher
         }
 
+        public static void Restore(SavedFileEntry entry)
+        {
+            Save(entry.FileName, entry.PlainText, entry.RichJson);
+        }
+
         public static void DeleteAll()
         {
             try

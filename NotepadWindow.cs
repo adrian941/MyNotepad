@@ -38,7 +38,8 @@ namespace MinimalNotepad
         private TextEditor _editor        = null!;
         private FormattingManager _fmtManager = null!;
         private FoldingManager                _foldingManager         = null!;
-        private readonly List<FoldingSection> _codeBlockFoldings      = new();
+        private readonly List<FoldingSection>                     _codeBlockFoldings  = new();
+        private readonly Dictionary<FoldingSection, CodeBlockRegion> _foldingToRegion = new();
         private CodeBlockCollapseGenerator    _collapseGenerator      = null!;
         private CodeSyntaxColorizer           _codeColorizer          = null!;
         private CodeBlockBackgroundRenderer    _codeRenderer              = null!;
@@ -251,6 +252,7 @@ namespace MinimalNotepad
             // Rebuild FoldingManager sections for StartMinimized blocks (> 20 content lines)
             foreach (var f in _codeBlockFoldings) _foldingManager.RemoveFolding(f);
             _codeBlockFoldings.Clear();
+            _foldingToRegion.Clear();
             foreach (var region in regions)
             {
                 if (!region.StartMinimized) continue;
@@ -268,6 +270,7 @@ namespace MinimalNotepad
                 section.Title    = " ···";
                 section.IsFolded = true;
                 _codeBlockFoldings.Add(section);
+                _foldingToRegion[section] = region;
             }
 
             _codeColorizer.UpdateBlocks(_editor.Document, regions);
@@ -340,6 +343,17 @@ namespace MinimalNotepad
         {
             UpdateTitle();
             UpdateCaretBrush();
+            CheckAndSyncFoldState();
+        }
+
+        // Detects folding sections expanded externally (Find, Go to Line) and removes :min from fence
+        void CheckAndSyncFoldState()
+        {
+            foreach (var section in _codeBlockFoldings.ToList())
+            {
+                if (!section.IsFolded && _foldingToRegion.TryGetValue(section, out var region))
+                    ToggleFenceFlag(region, "min", forceOn: false);
+            }
         }
 
         static readonly SolidColorBrush DarkCaretBrush  = MakeFrozen(Color.FromRgb(0xFF, 0xFF, 0xFF));
@@ -780,9 +794,22 @@ namespace MinimalNotepad
             var dlg = new CodeBlockGoToLineDialog(maxLines, this);
             if (dlg.ShowDialog() != true || dlg.ResultLine == null) return;
 
-            int docLineNum = block.FenceOpenLine + dlg.ResultLine.Value;
-            var docLine    = _editor.Document.GetLineByNumber(docLineNum);
-            _editor.Select(docLine.Offset, docLine.Length);
+            int docLineNum  = block.FenceOpenLine + dlg.ResultLine.Value;
+            var targetLine  = _editor.Document.GetLineByNumber(docLineNum);
+
+            // If the target line is inside a folded section, unfold it first
+            foreach (var section in _codeBlockFoldings)
+            {
+                if (section.IsFolded
+                    && targetLine.Offset >= section.StartOffset
+                    && targetLine.Offset <= section.EndOffset)
+                {
+                    section.IsFolded = false; // CheckAndSyncFoldState will remove :min on next caret event
+                    break;
+                }
+            }
+
+            _editor.Select(targetLine.Offset, targetLine.Length);
             _editor.ScrollToLine(docLineNum);
         }
 

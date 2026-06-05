@@ -29,10 +29,18 @@ internal class ClipboardHistoryWindow : Window
     private Border _sysTab = null!;
     private Border _filesTab = null!;
     private IntPtr _externalFocusHwnd = IntPtr.Zero;
-    private IntPtr _ownHwnd = IntPtr.Zero;             // HWND of this ClipboardHistoryWindow
-    private bool _isPasting = false;                 // guard against rapid-click races
-    private WinEventDelegate? _foregroundEventDelegate;  // prevent GC collection
+    private IntPtr _ownHwnd = IntPtr.Zero;
+    private bool _isPasting = false;
+    private WinEventDelegate? _foregroundEventDelegate;
     private IntPtr _foregroundEventHook = IntPtr.Zero;
+
+    // ── Keyboard navigation + undo ────────────────────────────────────────
+    private int _selectedIndex = -1;
+    private readonly Stack<(HistoryMode Mode, int Index, object Entry)> _undoStack = new();
+    private readonly List<(Border Card, Brush NormalBg, Action OnActivate, Action OnDelete, object Entry)> _cardList = new();
+
+    private static readonly Brush _selCardBorder  = new SolidColorBrush(Color.FromRgb(0x55, 0x88, 0xCC));
+    private static readonly Brush _normCardBorder = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0));
 
     // ── Win32 P/Invoke ────────────────────────────────────────────────────
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -130,6 +138,18 @@ internal class ClipboardHistoryWindow : Window
         RefreshCards();
     }
 
+    private void SwitchToGlobalMode()
+    {
+        if (_mode == HistoryMode.Global) return;
+        if (_mode == HistoryMode.App)  ClipboardHistory.HistoryChanged      -= OnHistoryChanged;
+        if (_mode == HistoryMode.Files) SavedFileStore.SavedFilesChanged     -= OnHistoryChanged;
+        _mode = HistoryMode.Global;
+        NormalClipboardHistory.HistoryChanged += OnHistoryChanged;
+        Title = "Clipboard History — System";
+        UpdateActiveTab();
+        RefreshCards();
+    }
+
     private void SwitchToFilesMode()
     {
         if (_mode == HistoryMode.Files) return;
@@ -140,6 +160,25 @@ internal class ClipboardHistoryWindow : Window
         Title = "Saved Files";
         UpdateActiveTab();
         RefreshCards();
+    }
+
+    private void CycleTab(int direction)
+    {
+        var modes = new System.Collections.Generic.List<HistoryMode> { HistoryMode.App };
+        if (GlobalClipboardMonitor.IsEnabled) modes.Add(HistoryMode.Global);
+        modes.Add(HistoryMode.Files);
+
+        int cur  = modes.IndexOf(_mode);
+        if (cur < 0) cur = 0;
+        int next = (cur + direction + modes.Count) % modes.Count;
+
+        _selectedIndex = 0; // reset to first card in new tab
+        switch (modes[next])
+        {
+            case HistoryMode.App:    SwitchToAppMode();    break;
+            case HistoryMode.Global: SwitchToGlobalMode(); break;
+            case HistoryMode.Files:  SwitchToFilesMode();  break;
+        }
     }
 
     // ── Constructor ───────────────────────────────────────────────────────
@@ -415,7 +454,11 @@ internal class ClipboardHistoryWindow : Window
         _foregroundEventHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
             IntPtr.Zero, _foregroundEventDelegate, 0, 0, WINEVENT_OUTOFCONTEXT);
 
-        Loaded += (_, _) => _ownHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        Loaded += (_, _) =>
+        {
+            _ownHwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            Focus();
+        };
 
         Closed += (_, _) =>
         {
@@ -424,8 +467,11 @@ internal class ClipboardHistoryWindow : Window
             ClipboardHistory.HistoryChanged -= OnHistoryChanged;
             NormalClipboardHistory.HistoryChanged -= OnHistoryChanged;
             SavedFileStore.SavedFilesChanged -= OnHistoryChanged;
+            _undoStack.Clear();
             _instance = null;
         };
+
+        PreviewKeyDown += OnWindowPreviewKeyDown;
     }
 
     // ── Foreground window tracking (for external paste) ───────────────────
@@ -475,31 +521,53 @@ internal class ClipboardHistoryWindow : Window
 
     private void RefreshCards()
     {
+        int prevIndex = _selectedIndex;
         _cardsPanel.Children.Clear();
+        _cardList.Clear();
 
         if (_mode == HistoryMode.Files)
         {
             var files = SavedFileStore.LoadAll();
-            if (files.Count == 0) { ShowEmptyMessage("No saved files yet."); return; }
+            if (files.Count == 0) { ShowEmptyMessage("No saved files yet."); _selectedIndex = -1; return; }
             foreach (var f in files)
-                _cardsPanel.Children.Add(BuildSavedFileCard(f));
-            return;
+            {
+                var (card, normalBg, onActivate, onDelete) = BuildSavedFileCard(f);
+                _cardsPanel.Children.Add(card);
+                _cardList.Add((card, normalBg, onActivate, onDelete, f));
+            }
         }
-
-        if (_mode == HistoryMode.Global)
+        else if (_mode == HistoryMode.Global)
         {
             var entries = NormalClipboardHistory.Entries;
-            if (entries.Count == 0) { ShowEmptyMessage("No clipboard history yet."); return; }
+            if (entries.Count == 0) { ShowEmptyMessage("No clipboard history yet."); _selectedIndex = -1; return; }
             foreach (var entry in entries)
-                _cardsPanel.Children.Add(BuildCard(entry));
-            return;
+            {
+                var (card, normalBg, onActivate, onDelete) = BuildCard(entry);
+                _cardsPanel.Children.Add(card);
+                _cardList.Add((card, normalBg, onActivate, onDelete, entry));
+            }
+        }
+        else
+        {
+            var clipEntries = ClipboardHistory.Entries.ToList();
+            if (clipEntries.Count == 0) { ShowEmptyMessage("No clipboard history yet."); _selectedIndex = -1; return; }
+            foreach (var e in clipEntries)
+            {
+                var (card, normalBg, onActivate, onDelete) = BuildCard(e);
+                _cardsPanel.Children.Add(card);
+                _cardList.Add((card, normalBg, onActivate, onDelete, e));
+            }
         }
 
-        // App mode
-        var clipEntries = ClipboardHistory.Entries.ToList();
-        if (clipEntries.Count == 0) { ShowEmptyMessage("No clipboard history yet."); return; }
-        foreach (var e in clipEntries)
-            _cardsPanel.Children.Add(BuildCard(e));
+        if (_cardList.Count > 0)
+        {
+            int newIndex = prevIndex < 0 ? 0 : Math.Min(prevIndex, _cardList.Count - 1);
+            SetSelectedIndex(newIndex, scrollIntoView: false);
+        }
+        else
+        {
+            _selectedIndex = -1;
+        }
     }
 
     private void ShowEmptyMessage(string text)
@@ -515,7 +583,7 @@ internal class ClipboardHistoryWindow : Window
         });
     }
 
-    private UIElement BuildCard(ClipboardEntry entry)
+    private (Border Card, Brush NormalBg, Action OnActivate, Action OnDelete) BuildCard(ClipboardEntry entry)
     {
         var spans = RichClipboard.DeserializeSpans(entry.RichJson);
 
@@ -577,9 +645,9 @@ internal class ClipboardHistoryWindow : Window
             deleteBtn.Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB));
         deleteBtn.MouseLeftButtonUp += (_, e) =>
         {
-            e.Handled = true; // don't trigger card paste
-            if (_mode == HistoryMode.App) ClipboardHistory.Remove(entry);
-            else NormalClipboardHistory.Remove(entry);
+            e.Handled = true;
+            int idx = _cardList.FindIndex(t => t.Entry.Equals(entry));
+            if (idx >= 0) DeleteCard(idx);
         };
 
         var footer = new DockPanel { LastChildFill = false, Margin = new Thickness(0) };
@@ -625,6 +693,7 @@ internal class ClipboardHistoryWindow : Window
         };
         card.MouseLeave += (_, _) =>
         {
+            if (card.Tag is true) return; // keep selection styling
             card.Background = Brushes.White;
             if (fadeOverlay != null)
                 fadeOverlay.Background = MakeFade(Colors.White);
@@ -635,9 +704,6 @@ internal class ClipboardHistoryWindow : Window
             bool bubbleAttached = false;
             previewBlock.Loaded += (_, _) =>
             {
-                // Defer until after layout so ActualWidth is valid.
-                // Using DispatcherPriority.Background ensures we run after
-                // the full measure/arrange pass completes.
                 Dispatcher.InvokeAsync(() =>
                 {
                     if (previewBlock.ActualWidth <= 0) return;
@@ -655,13 +721,16 @@ internal class ClipboardHistoryWindow : Window
             };
         }
 
-        // ── Click → paste ─────────────────────────────────────────────────
         card.MouseLeftButtonUp += (_, _) => PasteEntry(entry.PlainText, spans);
 
-        return card;
+        Action onDelete = _mode == HistoryMode.App
+            ? () => ClipboardHistory.Remove(entry)
+            : () => NormalClipboardHistory.Remove(entry);
+
+        return (card, Brushes.White, () => PasteEntry(entry.PlainText, spans), onDelete);
     }
 
-    private UIElement BuildSavedFileCard(SavedFileEntry entry)
+    private (Border Card, Brush NormalBg, Action OnActivate, Action OnDelete) BuildSavedFileCard(SavedFileEntry entry)
     {
         var spans = RichClipboard.DeserializeSpans(entry.RichJson);
 
@@ -724,7 +793,8 @@ internal class ClipboardHistoryWindow : Window
         deleteBtn.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
-            SavedFileStore.Delete(entry.FileName);
+            int idx = _cardList.FindIndex(t => t.Entry.Equals(entry));
+            if (idx >= 0) DeleteCard(idx);
         };
 
         var footerLeft = new StackPanel { Orientation = Orientation.Horizontal };
@@ -771,6 +841,7 @@ internal class ClipboardHistoryWindow : Window
         };
         card.MouseLeave += (_, _) =>
         {
+            if (card.Tag is true) return;
             card.Background = normalBg;
             fadeOverlay.Background = MakeFade(CardBgSaved);
         };
@@ -796,7 +867,121 @@ internal class ClipboardHistoryWindow : Window
 
         card.MouseLeftButtonUp += (_, _) => OpenSavedFile(entry);
 
-        return card;
+        return (card, normalBg, () => OpenSavedFile(entry), () => SavedFileStore.Delete(entry.FileName));
+    }
+
+    // ── Keyboard navigation ───────────────────────────────────────────────
+
+    private void SetSelectedIndex(int index, bool scrollIntoView = true)
+    {
+        if (_selectedIndex >= 0 && _selectedIndex < _cardList.Count)
+        {
+            var prev = _cardList[_selectedIndex];
+            prev.Card.Tag = false;
+            prev.Card.BorderBrush     = _normCardBorder;
+            prev.Card.BorderThickness = new Thickness(1);
+        }
+
+        _selectedIndex = index;
+
+        if (index >= 0 && index < _cardList.Count)
+        {
+            var curr = _cardList[index];
+            curr.Card.Tag = true;
+            curr.Card.BorderBrush     = _selCardBorder;
+            curr.Card.BorderThickness = new Thickness(2);
+            if (scrollIntoView)
+                curr.Card.BringIntoView();
+        }
+    }
+
+    private void DeleteCard(int index)
+    {
+        if (index < 0 || index >= _cardList.Count) return;
+        var info = _cardList[index];
+        _undoStack.Push((_mode, index, info.Entry));
+        info.OnDelete();
+        // RefreshCards fires via HistoryChanged; _selectedIndex clamped there
+    }
+
+    private void UndoDelete()
+    {
+        if (_undoStack.Count == 0) return;
+        var (mode, index, entry) = _undoStack.Pop();
+
+        if (entry is ClipboardEntry clipEntry)
+        {
+            _selectedIndex = index;
+            if (mode == HistoryMode.App) ClipboardHistory.InsertAt(index, clipEntry);
+            else                         NormalClipboardHistory.InsertAt(index, clipEntry);
+        }
+        else if (entry is SavedFileEntry fileEntry)
+        {
+            _selectedIndex = 0;
+            SavedFileStore.Restore(fileEntry);
+        }
+    }
+
+    private void OnWindowPreviewKeyDown(object? sender, KeyEventArgs e)
+    {
+        bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
+
+        if (ctrl && e.Key == Key.Z)
+        {
+            UndoDelete();
+            e.Handled = true;
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case Key.Down:
+                if (_selectedIndex < _cardList.Count - 1)
+                    SetSelectedIndex(_selectedIndex + 1);
+                else if (_selectedIndex < 0 && _cardList.Count > 0)
+                    SetSelectedIndex(0);
+                e.Handled = true;
+                break;
+
+            case Key.Up:
+                if (_selectedIndex > 0)
+                    SetSelectedIndex(_selectedIndex - 1);
+                else if (_selectedIndex < 0 && _cardList.Count > 0)
+                    SetSelectedIndex(0);
+                e.Handled = true;
+                break;
+
+            case Key.Left:
+                CycleTab(-1);
+                e.Handled = true;
+                break;
+
+            case Key.Right:
+                CycleTab(1);
+                e.Handled = true;
+                break;
+
+            case Key.Enter:
+                if (_selectedIndex >= 0 && _selectedIndex < _cardList.Count)
+                {
+                    _cardList[_selectedIndex].OnActivate();
+                    e.Handled = true;
+                }
+                break;
+
+            case Key.Delete:
+                if (_selectedIndex >= 0 && _selectedIndex < _cardList.Count)
+                {
+                    DeleteCard(_selectedIndex);
+                    e.Handled = true;
+                }
+                break;
+
+            case Key.Escape:
+                Close();
+                e.Handled = true;
+                break;
+        }
     }
 
     private async void PasteEntry(string plainText, List<FormattingManager.SpanRecord>? spans)
