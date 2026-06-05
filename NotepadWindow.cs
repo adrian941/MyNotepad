@@ -50,6 +50,7 @@ namespace MinimalNotepad
         private CodeBlockCopyOverlay          _copyOverlay            = null!;
         private System.Windows.Controls.Canvas _overlayCanvas         = null!;
         private System.Windows.Threading.DispatcherTimer _reParseTimer = null!;
+        private System.Windows.Threading.DispatcherTimer? _windowStateSaveTimer;
 
         public NotepadWindow(
             AppSettings               settings,
@@ -304,6 +305,8 @@ namespace MinimalNotepad
 
             _editor.TextArea.TextView.ScrollOffsetChanged += (_, _) => _copyOverlay.UpdatePositions();
             _editor.TextArea.TextView.VisualLinesChanged   += (_, _) => _copyOverlay.UpdatePositions();
+            SizeChanged     += (_, _) => ScheduleWindowStateSave();
+            LocationChanged += (_, _) => ScheduleWindowStateSave();
 
 
 
@@ -407,6 +410,7 @@ namespace MinimalNotepad
             {
                 _editor.FontSize += e.Delta > 0 ? 1 : -1;
                 _settings.FontSize = _editor.FontSize;
+                ScheduleWindowStateSave();
                 e.Handled = true;
             }
         }
@@ -654,18 +658,21 @@ namespace MinimalNotepad
             {
                 _editor.FontSize += 1;
                 _settings.FontSize = _editor.FontSize;
+                ScheduleWindowStateSave();
                 e.Handled = true;
             }
             else if (e.Key == Key.OemMinus || e.Key == Key.Subtract)
             {
                 _editor.FontSize = Math.Max(6, _editor.FontSize - 1);
                 _settings.FontSize = _editor.FontSize;
+                ScheduleWindowStateSave();
                 e.Handled = true;
             }
         }
 
         void OnWindowClosed(object? sender, EventArgs e)
         {
+            _windowStateSaveTimer?.Stop();
             FindReplaceWindow.CloseIfTargeting(_editor);
             _settings.WindowLeft   = Left;
             _settings.WindowTop    = Top;
@@ -749,6 +756,34 @@ namespace MinimalNotepad
                 new FormattingUndoOperation(_fmtManager, before, after, _editor.TextArea.TextView));
 
             _editor.TextArea.TextView.Redraw();
+        }
+
+        // ── Per-file window state (size + font) ──────────────────────────────
+
+        string? CurrentFilePath =>
+            _externalPath   != null ? _externalPath :
+            _savedFileName  != null ? SavedFileStore.GetFilePath(_savedFileName) :
+            null;
+
+        void ScheduleWindowStateSave()
+        {
+            if (CurrentFilePath == null) return;
+
+            if (_windowStateSaveTimer == null)
+            {
+                _windowStateSaveTimer = new System.Windows.Threading.DispatcherTimer
+                    { Interval = TimeSpan.FromMilliseconds(600) };
+                _windowStateSaveTimer.Tick += (_, _) =>
+                {
+                    _windowStateSaveTimer.Stop();
+                    string? path = CurrentFilePath;
+                    if (path != null)
+                        SavedFileStore.PatchWindowState(path, Width, Height, _editor.FontSize,
+                            SavedFileStore.GetDisplayFingerprint(), Left, Top);
+                };
+            }
+            _windowStateSaveTimer.Stop();
+            _windowStateSaveTimer.Start();
         }
 
         // ── Code block helpers ────────────────────────────────────────────────
@@ -1081,11 +1116,13 @@ namespace MinimalNotepad
 
             // A file opened from outside the managed Saved folder saves in-place to its
             // original path instead of dropping a copy into the library.
+            string displayKey = SavedFileStore.GetDisplayFingerprint();
             if (_externalPath != null)
             {
                 try
                 {
-                    SavedFileStore.SaveToPath(_externalPath, text, richJson);
+                    SavedFileStore.SaveToPath(_externalPath, text, richJson,
+                        Width, Height, _editor.FontSize, displayKey, Left, Top);
                 }
                 catch (Exception ex)
                 {
@@ -1096,7 +1133,8 @@ namespace MinimalNotepad
             }
             else
             {
-                SavedFileStore.Save(name, text, richJson);
+                SavedFileStore.Save(name, text, richJson,
+                    Width, Height, _editor.FontSize, displayKey, Left, Top);
             }
 
             _prefixTitle = name;
@@ -1148,6 +1186,28 @@ namespace MinimalNotepad
             {
                 _fmtManager.ApplyRelativeSpans(0, spans);
                 _editor.TextArea.TextView.Redraw();
+            }
+
+            // Restore per-file window size, font and position (without touching global defaults)
+            if (entry.WindowWidth.HasValue && entry.WindowHeight.HasValue)
+            {
+                Width  = entry.WindowWidth.Value;
+                Height = entry.WindowHeight.Value;
+            }
+            if (entry.FontSize.HasValue)
+                _editor.FontSize = entry.FontSize.Value;
+            if (entry.WindowLeft.HasValue && entry.WindowTop.HasValue)
+            {
+                double l = entry.WindowLeft.Value, t = entry.WindowTop.Value;
+                double vl = SystemParameters.VirtualScreenLeft;
+                double vt = SystemParameters.VirtualScreenTop;
+                double vr = vl + SystemParameters.VirtualScreenWidth;
+                double vb = vt + SystemParameters.VirtualScreenHeight;
+                if (l >= vl && l < vr && t >= vt && t < vb)
+                {
+                    Left = l;
+                    Top  = t;
+                }
             }
 
             _editor.CaretOffset = 0;
