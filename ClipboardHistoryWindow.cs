@@ -865,7 +865,8 @@ internal class ClipboardHistoryWindow : Window
             };
         }
 
-        card.MouseLeftButtonUp += (_, _) => OpenSavedFile(entry);
+        card.MouseLeftButtonUp  += (_, _) => OpenSavedFile(entry);
+        card.MouseRightButtonUp += (_, e) => { e.Handled = true; ShowOpenWithMenu(card, entry); };
 
         return (card, normalBg, () => OpenSavedFile(entry), () => SavedFileStore.Delete(entry.FileName));
     }
@@ -1023,6 +1024,106 @@ internal class ClipboardHistoryWindow : Window
 
     private void OpenSavedFile(SavedFileEntry entry) =>
         NotepadWindow.OpenOrFocusSavedFile(entry, _targetWindow);
+
+    // ── Open With (right-click on file cards) ─────────────────────────────
+
+    private void ShowOpenWithMenu(UIElement anchor, SavedFileEntry entry)
+    {
+        string filePath = Formatting.SavedFileStore.GetFilePath(entry.FileName);
+
+        var known  = OpenWithStore.GetKnownEditors();
+        var recent = OpenWithStore.GetRecent();
+        string? defPath = OpenWithStore.DefaultPath;
+
+        // Build deduped ordered list: default first (if any), then known, then extra-recent
+        var shownPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var menu = new ContextMenu { FontSize = 12 };
+
+        MenuItem MakeItem(string label, string exePath, string exeName)
+        {
+            bool isDef = string.Equals(exePath, defPath, StringComparison.OrdinalIgnoreCase);
+            var mi = new MenuItem
+            {
+                Header  = (isDef ? "✓  " : "    ") + label,
+                Tag     = exePath,
+            };
+            mi.Click += (_, _) => OpenFileWith(exePath, exeName, filePath);
+            return mi;
+        }
+
+        // 1 — Known editors (in detection order)
+        foreach (var (name, path) in known)
+        {
+            if (shownPaths.Add(path))
+                menu.Items.Add(MakeItem($"Open with  {name}", path, name));
+        }
+
+        // 2 — Recent programs not already shown
+        var extraRecent = recent.Where(r => shownPaths.Add(r.Path)).ToList();
+        if (extraRecent.Count > 0)
+        {
+            menu.Items.Add(new Separator());
+            foreach (var r in extraRecent)
+                menu.Items.Add(MakeItem($"Open with  {r.Name}", r.Path, r.Name));
+        }
+
+        // 3 — Choose other
+        menu.Items.Add(new Separator());
+        var chooseItem = new MenuItem { Header = "    Choose other program…" };
+        chooseItem.Click += (_, _) => ChooseOtherProgram(filePath);
+        menu.Items.Add(chooseItem);
+
+        menu.PlacementTarget = anchor;
+        menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+        menu.IsOpen          = true;
+    }
+
+    private void OpenFileWith(string exePath, string name, string filePath)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName  = exePath,
+                Arguments = $"\"{filePath}\"",
+                UseShellExecute = false,
+            });
+            OpenWithStore.Use(exePath, name);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not open with {name}:\n{ex.Message}",
+                "Open with", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ChooseOtherProgram(string filePath)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title            = "Choose a program to open this file",
+            Filter           = "Programs (*.exe)|*.exe|All files (*.*)|*.*",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+        };
+
+        _suppressDeactivationHwndCapture = true;
+        bool? picked = dlg.ShowDialog(this);
+        _suppressDeactivationHwndCapture = false;
+        if (picked != true) return;
+
+        string exePath = dlg.FileName;
+        string name    = System.IO.Path.GetFileNameWithoutExtension(exePath);
+
+        _suppressDeactivationHwndCapture = true;
+        var confirm = new OpenWithPickerDialog(name, this);
+        bool? confirmed = confirm.ShowDialog();
+        _suppressDeactivationHwndCapture = false;
+        if (confirmed != true) return;
+
+        OpenWithStore.Use(exePath, name, confirm.SetAsDefault);
+        OpenFileWith(exePath, name, filePath);
+    }
 
     // ── Footer helpers ────────────────────────────────────────────────────
 
