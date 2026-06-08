@@ -172,6 +172,11 @@ namespace MinimalNotepad.Formatting
             ModifyRange(start, end, f => f.Strikethrough = !allStrike);
         }
 
+        public void SetBold(int start, int end, bool value)          => ModifyRange(start, end, f => f.Bold          = value);
+        public void SetItalic(int start, int end, bool value)        => ModifyRange(start, end, f => f.Italic        = value);
+        public void SetUnderline(int start, int end, bool value)     => ModifyRange(start, end, f => f.Underline     = value);
+        public void SetStrikethrough(int start, int end, bool value) => ModifyRange(start, end, f => f.Strikethrough = value);
+
         public void ClearFormatting(int start, int end)
             => ModifyRange(start, end, f =>
             {
@@ -280,6 +285,17 @@ namespace MinimalNotepad.Formatting
                 .Where(s => !s.IsDeleted && !s.IsEmpty)
                 .Select(s => new SpanRecord(s.Start, s.End, s.Format.Clone()))
                 .ToList();
+
+        public List<SpanRecord> GetRelativeSpansForRange(int start, int end)
+        {
+            SplitAt(start);
+            SplitAt(end);
+            Cleanup();
+            return _spans
+                .Where(s => !s.IsDeleted && !s.IsEmpty && s.Start >= start && s.End <= end)
+                .Select(s => new SpanRecord(s.Start - start, s.End - start, s.Format.Clone()))
+                .ToList();
+        }
 
         public void RestoreSnapshot(List<SpanRecord> snapshot, TextView textView)
         {

@@ -908,10 +908,47 @@ namespace MinimalNotepad
             int caretInLine  = selStart - origStart.Offset;
             int selEndInLine = selLength > 0 ? (selStart + selLength) - origEnd.Offset : 0;
 
-            // Single Replace → single undo entry
+            // Capture per-line formatting before the replace (relative to each line's start offset)
+            var fmtBefore = _fmtManager.TakeSnapshot();
+            var lineFormats = new List<FormattingManager.SpanRecord>[count];
+            for (int i = 0; i < count; i++)
+            {
+                var line = doc.GetLineByNumber(firstNum + i);
+                lineFormats[i] = _fmtManager.GetRelativeSpansForRange(line.Offset, line.Offset + line.Length);
+            }
+
+            // Rotate formatting the same way the line contents were rotated above
+            if (moveUp)
+            {
+                var first = lineFormats[0];
+                for (int i = 0; i < count - 1; i++) lineFormats[i] = lineFormats[i + 1];
+                lineFormats[count - 1] = first;
+            }
+            else
+            {
+                var last = lineFormats[count - 1];
+                for (int i = count - 1; i > 0; i--) lineFormats[i] = lineFormats[i - 1];
+                lineFormats[0] = last;
+            }
+
+            // Single Replace → single undo entry; group with formatting change so Ctrl+Z undoes both
             var sb = new System.Text.StringBuilder();
             for (int i = 0; i < count; i++) sb.Append(contents[i]).Append(delimiters[i]);
+            _editor.Document.UndoStack.StartUndoGroup();
             doc.Replace(regionStart, regionEnd - regionStart, sb.ToString());
+
+            // Anchors inside the replaced region are now scrambled; clear and re-apply at rotated positions
+            _fmtManager.ClearFormatting(regionStart, regionEnd);
+            for (int i = 0; i < count; i++)
+            {
+                var newLine = doc.GetLineByNumber(firstNum + i);
+                _fmtManager.ApplyRelativeSpans(newLine.Offset, lineFormats[i]);
+            }
+            var fmtAfter = _fmtManager.TakeSnapshot();
+            _editor.Document.UndoStack.Push(
+                new FormattingUndoOperation(_fmtManager, fmtBefore, fmtAfter, _editor.TextArea.TextView));
+            _editor.Document.UndoStack.EndUndoGroup();
+            _editor.TextArea.TextView.Redraw();
 
             int newStartLine = moveUp ? startLine - 1 : startLine + 1;
             int newEndLine   = moveUp ? endLine - 1   : endLine + 1;

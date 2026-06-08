@@ -129,6 +129,8 @@ namespace MinimalNotepad
         readonly TextBlock    _titleLabel;
         Popup?                _formatPopup;
         ToggleButton?         _fmtBoldBtn, _fmtItalicBtn, _fmtUnderBtn, _fmtStrikeBtn;
+        bool                  _inSelectionOnly = false;
+        CheckBox?             _inSelPopupChk;
         Brush?                _savedSelectionBrush;
         Brush?                _savedSelectionForeground;
         static readonly Brush SelectionOrange = FreezeB(new SolidColorBrush(Color.FromArgb(150, 0xFF, 0xC0, 0x40)));
@@ -359,18 +361,29 @@ namespace MinimalNotepad
             RunSearch();
         }
 
+        IEnumerable<(int Start, int Length)> MatchesInScope()
+        {
+            if (!_inSelectionOnly || _target == null || _target.SelectionLength == 0) return _matches;
+            int selStart = _target.SelectionStart;
+            int selEnd   = selStart + _target.SelectionLength;
+            return _matches.Where(m => m.Start >= selStart && m.Start + m.Length <= selEnd);
+        }
+
         void DoReplaceAll()
         {
             if (_target == null || _matches.Count == 0) return;
             string rep = _replaceBox.Text ?? "";
             AddToHistory(rep, ReplaceHistory);
 
+            var scope = MatchesInScope().ToList();
+            if (scope.Count == 0) return;
+
             _suppressSearch = true;
             using (_target.Document.RunUpdate())
             {
-                for (int i = _matches.Count - 1; i >= 0; i--)
+                for (int i = scope.Count - 1; i >= 0; i--)
                 {
-                    var (s, l) = _matches[i];
+                    var (s, l) = scope[i];
                     _target.Document.Replace(s, l, rep);
                 }
             }
@@ -554,6 +567,20 @@ namespace MinimalNotepad
             replaceBtn.Margin = new Thickness(0, 0, 8, 0);
             replaceBtnRow.Children.Add(replaceBtn);
             replaceBtnRow.Children.Add(replaceAllBtn);
+
+            var inSelChk = new CheckBox
+            {
+                Content             = "In Selection",
+                VerticalAlignment   = VerticalAlignment.Center,
+                Margin              = new Thickness(10, 0, 0, 0),
+                ToolTip             = "Replace All only within the active selection",
+                IsChecked           = _inSelectionOnly,
+                FontSize            = 11,
+            };
+            inSelChk.Checked   += (_, _) => { _inSelectionOnly = true;  if (_inSelPopupChk != null) _inSelPopupChk.IsChecked = true; };
+            inSelChk.Unchecked += (_, _) => { _inSelectionOnly = false; if (_inSelPopupChk != null) _inSelPopupChk.IsChecked = false; };
+            replaceBtnRow.Children.Add(inSelChk);
+
             root.Children.Add(replaceBtnRow);
 
             // ── Wire events ───────────────────────────────────────────────────
@@ -946,17 +973,26 @@ namespace MinimalNotepad
             root.Children.Add(label("STYLE"));
             var styleRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 10) };
 
-            ToggleButton StyleToggle(UIElement icon, string tip, Action<int, int> act)
+            ToggleButton StyleToggle(UIElement icon, string tip, Func<int, int, bool> isActive, Action<int, int, bool> setValue)
             {
                 var b = new ToggleButton { Content = icon, ToolTip = tip, Width = 30, Height = 30, Margin = new Thickness(0, 0, 4, 0), Cursor = Cursors.Hand, Style = toggleStyle };
-                b.Click += (_, _) => { ApplyFormattingToAllMatches(act); UpdateFormatToggles(); };
+                b.Click += (_, _) =>
+                {
+                    var fm    = _staticFmtManager;
+                    var scope = MatchesInScope().ToList();
+                    if (fm == null || scope.Count == 0) return;
+                    bool allActive = scope.All(m => isActive(m.Start, m.Start + m.Length));
+                    bool target = !allActive;
+                    ApplyFormattingToAllMatches((s, e) => setValue(s, e, target));
+                    UpdateFormatToggles();
+                };
                 return b;
             }
 
-            _fmtBoldBtn   = StyleToggle(new TextBlock { Text = "B", FontWeight = FontWeights.Bold,   FontSize = 13, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }, "Bold all matches",          (s, e) => _staticFmtManager?.ToggleBold(s, e));
-            _fmtItalicBtn = StyleToggle(new TextBlock { Text = "I", FontStyle  = FontStyles.Italic,  FontSize = 13, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }, "Italic all matches",        (s, e) => _staticFmtManager?.ToggleItalic(s, e));
-            _fmtUnderBtn  = StyleToggle(new TextBlock { Text = "U", TextDecorations = TextDecorations.Underline,     FontSize = 13, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }, "Underline all matches",     (s, e) => _staticFmtManager?.ToggleUnderline(s, e));
-            _fmtStrikeBtn = StyleToggle(new TextBlock { Text = "S", TextDecorations = TextDecorations.Strikethrough, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }, "Strikethrough all matches", (s, e) => _staticFmtManager?.ToggleStrikethrough(s, e));
+            _fmtBoldBtn   = StyleToggle(new TextBlock { Text = "B", FontWeight = FontWeights.Bold,   FontSize = 13, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }, "Bold all matches",          (s, e) => _staticFmtManager?.IsRangeBold(s, e)          == true, (s, e, v) => _staticFmtManager?.SetBold(s, e, v));
+            _fmtItalicBtn = StyleToggle(new TextBlock { Text = "I", FontStyle  = FontStyles.Italic,  FontSize = 13, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }, "Italic all matches",        (s, e) => _staticFmtManager?.IsRangeItalic(s, e)        == true, (s, e, v) => _staticFmtManager?.SetItalic(s, e, v));
+            _fmtUnderBtn  = StyleToggle(new TextBlock { Text = "U", TextDecorations = TextDecorations.Underline,     FontSize = 13, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }, "Underline all matches",     (s, e) => _staticFmtManager?.IsRangeUnderline(s, e)     == true, (s, e, v) => _staticFmtManager?.SetUnderline(s, e, v));
+            _fmtStrikeBtn = StyleToggle(new TextBlock { Text = "S", TextDecorations = TextDecorations.Strikethrough, FontSize = 13, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center }, "Strikethrough all matches", (s, e) => _staticFmtManager?.IsRangeStrikethrough(s, e) == true, (s, e, v) => _staticFmtManager?.SetStrikethrough(s, e, v));
 
             Button TransformBtn(string text, string tip, Func<string, string> transform)
             {
@@ -1041,6 +1077,19 @@ namespace MinimalNotepad
             clearBtn.Click += (_, _) => { ApplyFormattingToAllMatches((s, e) => _staticFmtManager?.ClearFormatting(s, e)); };
             DockPanel.SetDock(clearBtn, Dock.Right);
             clearRow.Children.Add(clearBtn);
+            var inSelPopupChk = new CheckBox
+            {
+                Content           = "In Selection",
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin            = new Thickness(0, 0, 8, 0),
+                ToolTip           = "Apply formatting only to matches within the active selection",
+                IsChecked         = _inSelectionOnly,
+                FontSize          = 11,
+            };
+            _inSelPopupChk = inSelPopupChk;
+            inSelPopupChk.Checked   += (_, _) => _inSelectionOnly = true;
+            inSelPopupChk.Unchecked += (_, _) => _inSelectionOnly = false;
+            clearRow.Children.Add(inSelPopupChk);
             root.Children.Add(clearRow);
 
             return popup;
@@ -1049,9 +1098,11 @@ namespace MinimalNotepad
         void ApplyFormattingToAllMatches(Action<int, int> action)
         {
             var fm = _staticFmtManager;
-            if (_target == null || _matches.Count == 0 || fm == null) return;
+            if (_target == null || fm == null) return;
+            var scope = MatchesInScope().ToList();
+            if (scope.Count == 0) return;
             var before = fm.TakeSnapshot();
-            foreach (var (start, len) in _matches)
+            foreach (var (start, len) in scope)
                 action(start, start + len);
             var after = fm.TakeSnapshot();
             _target.Document.UndoStack.Push(new FormattingUndoOperation(fm, before, after, _target.TextArea.TextView));

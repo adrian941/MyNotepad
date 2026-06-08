@@ -18,14 +18,13 @@ namespace MinimalNotepad.Formatting
             var fg = _textArea.SelectionForeground;
             if (fg == null || _textArea.Selection.IsEmpty) return;
 
-            var seg = _textArea.Selection.SurroundingSegment;
-            if (seg == null) return;
-
-            int start = Math.Max(line.Offset, seg.Offset);
-            int end   = Math.Min(line.EndOffset, seg.Offset + seg.Length);
-            if (start >= end) return;
-
-            ChangeLinePart(start, end, el => el.TextRunProperties.SetForegroundBrush(fg));
+            foreach (var seg in _textArea.Selection.Segments)
+            {
+                int start = Math.Max(line.Offset, seg.StartOffset);
+                int end   = Math.Min(line.EndOffset, seg.EndOffset);
+                if (start >= end) continue;
+                ChangeLinePart(start, end, el => el.TextRunProperties.SetForegroundBrush(fg));
+            }
         }
     }
 }
