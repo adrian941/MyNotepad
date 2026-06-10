@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Windows;
+using MinimalNotepad.Config;
 
 namespace MinimalNotepad.Formatting
 {
@@ -15,9 +16,7 @@ namespace MinimalNotepad.Formatting
 
     static class SavedFileStore
     {
-        public static readonly string SavedFolder = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "MinimalNotepad", "Saved");
+        public static readonly string SavedFolder = Path.Combine(AppDataPath.Root, "Saved");
 
         private static FileSystemWatcher? _watcher;
 
@@ -41,8 +40,9 @@ namespace MinimalNotepad.Formatting
                 EnsureFolder();
                 _watcher = new FileSystemWatcher(SavedFolder, "*.mnp")
                 {
-                    NotifyFilter        = NotifyFilters.FileName | NotifyFilters.LastWrite,
-                    EnableRaisingEvents = true
+                    NotifyFilter         = NotifyFilters.FileName | NotifyFilters.LastWrite,
+                    IncludeSubdirectories = true, // also watch chip subfolders (Recall, Recall/Details, …)
+                    EnableRaisingEvents  = true
                 };
                 _watcher.Created += (_, _) => RaiseSavedFilesChanged();
                 _watcher.Deleted += (_, _) => RaiseSavedFilesChanged();

@@ -87,6 +87,31 @@ namespace MinimalNotepad
 
             BuildContent(root, colorEntries);
 
+            // ── Settings section ──────────────────────────────────────────────
+            root.Children.Add(new Border
+            {
+                Height     = 1,
+                Margin     = new Thickness(0, 16, 0, 8),
+                Background = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0))
+            });
+
+            var changeFolderLink = new TextBlock
+            {
+                Text             = "⚙  Change data folder…",
+                FontSize         = 12,
+                Foreground       = new SolidColorBrush(Color.FromRgb(0x1A, 0x7A, 0xC8)),
+                Cursor           = Cursors.Hand,
+                Margin           = new Thickness(0, 0, 0, 6),
+                TextDecorations  = TextDecorations.Underline
+            };
+            changeFolderLink.MouseEnter += (_, _) =>
+                changeFolderLink.Foreground = new SolidColorBrush(Color.FromRgb(0x0F, 0x4D, 0x8A));
+            changeFolderLink.MouseLeave += (_, _) =>
+                changeFolderLink.Foreground = new SolidColorBrush(Color.FromRgb(0x1A, 0x7A, 0xC8));
+            changeFolderLink.MouseLeftButtonUp += (_, _) =>
+                new ChangeDataFolderDialog(this).ShowDialog();
+            root.Children.Add(changeFolderLink);
+
             // ── Global clipboard checkbox footer ──────────────────────────────
             var cb = new CheckBox
             {

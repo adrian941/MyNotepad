@@ -21,6 +21,8 @@ internal class ClipboardHistoryWindow : Window
 
     private NotepadWindow _targetWindow;
     private StackPanel _cardsPanel = null!;
+    private WrapPanel _chipsPanel = null!;
+    private Border _chipsHost = null!;
     private bool _suppressDeactivationHwndCapture;
     private HistoryMode _mode = HistoryMode.App;
     private bool _singleLineMode = false;
@@ -431,14 +433,20 @@ internal class ClipboardHistoryWindow : Window
             Background = new SolidColorBrush(Color.FromRgb(0xE8, 0xE8, 0xE8))
         };
 
+        // ── Folder chips strip (pinned above the cards, Files mode only) ──
+        var chipsHost = BuildChipsHost();
+
         var outerDock = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(separator, Dock.Bottom);
         DockPanel.SetDock(footerRow, Dock.Bottom);
+        DockPanel.SetDock(chipsHost, Dock.Top);
         outerDock.Children.Add(separator);
         outerDock.Children.Add(footerRow);
+        outerDock.Children.Add(chipsHost);
         outerDock.Children.Add(scroll);
         Content = outerDock;
 
+        RefreshChips();
         RefreshCards();
 
         // Live updates — subscribe based on active mode at startup
@@ -517,6 +525,175 @@ internal class ClipboardHistoryWindow : Window
 
     private void OnHistoryChanged() => RefreshCards();
 
+    // ── Folder chips (Files mode) ─────────────────────────────────────────
+
+    private Border BuildChipsHost()
+    {
+        _chipsPanel = new WrapPanel { Orientation = Orientation.Horizontal };
+        _chipsHost = new Border
+        {
+            Background       = new SolidColorBrush(Color.FromRgb(0xFA, 0xFA, 0xFB)),
+            BorderBrush      = new SolidColorBrush(Color.FromRgb(0xE8, 0xE8, 0xE8)),
+            BorderThickness  = new Thickness(0, 0, 0, 1),
+            Padding          = new Thickness(8, 7, 8, 3),
+            Child            = _chipsPanel,
+            Visibility       = _mode == HistoryMode.Files ? Visibility.Visible : Visibility.Collapsed
+        };
+        return _chipsHost;
+    }
+
+    private void RefreshChips()
+    {
+        if (_chipsPanel == null) return;
+        _chipsPanel.Children.Clear();
+        _chipsPanel.Children.Add(BuildMainChip());
+        foreach (var rel in FolderChipsStore.Chips)
+            _chipsPanel.Children.Add(BuildChip(rel));
+        _chipsPanel.Children.Add(BuildAddChip());
+    }
+
+    private Border BuildMainChip()
+    {
+        bool active = FolderChipsStore.Active == null;
+
+        var label = new TextBlock
+        {
+            Text              = "Main",
+            FontSize          = 9,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground        = new SolidColorBrush(active ? Colors.White : Color.FromRgb(0x55, 0x55, 0x60))
+        };
+
+        var chip = new Border
+        {
+            Background      = new SolidColorBrush(active ? ChipActiveBg : ChipInactiveBg),
+            BorderBrush     = new SolidColorBrush(active
+                                  ? Color.FromRgb(0x2E, 0x7D, 0x32)
+                                  : Color.FromRgb(0xDC, 0xDC, 0xE0)),
+            BorderThickness = new Thickness(1),
+            CornerRadius    = new CornerRadius(9),
+            Padding         = new Thickness(8, 2, 8, 2),
+            Margin          = new Thickness(0, 0, 5, 5),
+            Cursor          = Cursors.Hand,
+            Child           = label,
+            ToolTip         = "Base folder (all top-level files)"
+        };
+        chip.MouseLeftButtonUp += (_, _) =>
+        {
+            if (FolderChipsStore.Active == null) return; // already on Main, no-op
+            FolderChipsStore.Active = null;
+            RefreshChips();
+            RefreshCards();
+        };
+        return chip;
+    }
+
+    private static readonly Color ChipActiveBg   = Color.FromRgb(0x2E, 0x7D, 0x32);
+    private static readonly Color ChipInactiveBg = Color.FromRgb(0xEC, 0xEC, 0xEE);
+
+    private Border BuildChip(string rel)
+    {
+        bool active = string.Equals(FolderChipsStore.Active, rel, StringComparison.OrdinalIgnoreCase);
+
+        var label = new TextBlock
+        {
+            Text              = rel,
+            FontSize          = 9,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground        = new SolidColorBrush(active ? Colors.White : Color.FromRgb(0x55, 0x55, 0x60))
+        };
+
+        var x = new TextBlock
+        {
+            Text              = "✕",
+            FontSize          = 8,
+            Margin            = new Thickness(5, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Cursor            = Cursors.Hand,
+            Foreground        = new SolidColorBrush(active
+                                    ? Color.FromArgb(0xDD, 0xFF, 0xFF, 0xFF)
+                                    : Color.FromRgb(0xAA, 0xAA, 0xB0)),
+            ToolTip           = "Remove chip"
+        };
+        x.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            FolderChipsStore.RemoveChip(rel);
+            RefreshChips();
+            RefreshCards();
+        };
+
+        var sp = new StackPanel { Orientation = Orientation.Horizontal };
+        sp.Children.Add(label);
+        sp.Children.Add(x);
+
+        var chip = new Border
+        {
+            Background       = new SolidColorBrush(active ? ChipActiveBg : ChipInactiveBg),
+            BorderBrush      = new SolidColorBrush(active
+                                    ? Color.FromRgb(0x2E, 0x7D, 0x32)
+                                    : Color.FromRgb(0xDC, 0xDC, 0xE0)),
+            BorderThickness  = new Thickness(1),
+            CornerRadius     = new CornerRadius(9),
+            Padding          = new Thickness(8, 2, 6, 2),
+            Margin           = new Thickness(0, 0, 5, 5),
+            Cursor           = Cursors.Hand,
+            Child            = sp,
+            ToolTip          = rel
+        };
+        chip.MouseLeftButtonUp += (_, _) =>
+        {
+            // Toggle: clicking the active chip clears the filter (back to base folder).
+            FolderChipsStore.Active = active ? null : rel;
+            RefreshChips();
+            RefreshCards();
+        };
+        return chip;
+    }
+
+    private Border BuildAddChip()
+    {
+        var plus = new TextBlock
+        {
+            Text                = "+",
+            FontSize            = 11,
+            FontWeight          = FontWeights.Bold,
+            Foreground          = new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32)),
+            VerticalAlignment   = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        var chip = new Border
+        {
+            Background      = new SolidColorBrush(Color.FromRgb(0xF0, 0xF6, 0xF0)),
+            BorderBrush     = new SolidColorBrush(Color.FromRgb(0xBE, 0xD8, 0xBE)),
+            BorderThickness = new Thickness(1),
+            CornerRadius    = new CornerRadius(9),
+            Padding         = new Thickness(9, 2, 9, 2),
+            Margin          = new Thickness(0, 0, 5, 5),
+            Cursor          = Cursors.Hand,
+            Child           = plus,
+            ToolTip         = "Add Folder"
+        };
+        chip.MouseLeftButtonUp += (_, _) => OpenFolderPicker();
+        return chip;
+    }
+
+    private void OpenFolderPicker()
+    {
+        _suppressDeactivationHwndCapture = true;
+        try
+        {
+            var dlg = new FolderPickerDialog(this);
+            if (dlg.ShowDialog() == true && !string.IsNullOrEmpty(dlg.SelectedRelative))
+            {
+                FolderChipsStore.AddChip(dlg.SelectedRelative);
+                RefreshChips();
+            }
+        }
+        finally { _suppressDeactivationHwndCapture = false; }
+        Activate();
+    }
+
     // ── Card list ─────────────────────────────────────────────────────────
 
     private void RefreshCards()
@@ -527,13 +704,33 @@ internal class ClipboardHistoryWindow : Window
 
         if (_mode == HistoryMode.Files)
         {
-            var files = SavedFileStore.LoadAll();
-            if (files.Count == 0) { ShowEmptyMessage("No saved files yet."); _selectedIndex = -1; return; }
-            foreach (var f in files)
+            string? active = FolderChipsStore.Active;
+            if (!string.IsNullOrEmpty(active) && FolderChipsStore.FolderExists(active))
             {
-                var (card, normalBg, onActivate, onDelete) = BuildSavedFileCard(f);
-                _cardsPanel.Children.Add(card);
-                _cardList.Add((card, normalBg, onActivate, onDelete, f));
+                // Filtered view: .mnp files inside the active subfolder, opened as external files.
+                var folderFiles = FolderChipsStore.LoadFolder(active);
+                if (folderFiles.Count == 0)
+                {
+                    ShowEmptyMessage($"No .mnp files in “{active}”."); _selectedIndex = -1; return;
+                }
+                foreach (var (f, fullPath) in folderFiles)
+                {
+                    var (card, normalBg, onActivate, onDelete) = BuildSavedFileCard(f, fullPath);
+                    _cardsPanel.Children.Add(card);
+                    _cardList.Add((card, normalBg, onActivate, onDelete, f));
+                }
+            }
+            else
+            {
+                // Base view: top-level Saved library files.
+                var files = SavedFileStore.LoadAll();
+                if (files.Count == 0) { ShowEmptyMessage("No saved files yet."); _selectedIndex = -1; return; }
+                foreach (var f in files)
+                {
+                    var (card, normalBg, onActivate, onDelete) = BuildSavedFileCard(f);
+                    _cardsPanel.Children.Add(card);
+                    _cardList.Add((card, normalBg, onActivate, onDelete, f));
+                }
             }
         }
         else if (_mode == HistoryMode.Global)
@@ -730,7 +927,8 @@ internal class ClipboardHistoryWindow : Window
         return (card, Brushes.White, () => PasteEntry(entry.PlainText, spans), onDelete);
     }
 
-    private (Border Card, Brush NormalBg, Action OnActivate, Action OnDelete) BuildSavedFileCard(SavedFileEntry entry)
+    private (Border Card, Brush NormalBg, Action OnActivate, Action OnDelete) BuildSavedFileCard(
+        SavedFileEntry entry, string? fullPath = null)
     {
         var spans = RichClipboard.DeserializeSpans(entry.RichJson);
 
@@ -865,10 +1063,19 @@ internal class ClipboardHistoryWindow : Window
             };
         }
 
-        card.MouseLeftButtonUp  += (_, _) => OpenSavedFile(entry);
-        card.MouseRightButtonUp += (_, e) => { e.Handled = true; ShowOpenWithMenu(card, entry); };
+        // fullPath == null → top-level library file (open/delete by name).
+        // fullPath != null → subfolder file (open as external file, delete by path).
+        Action open = fullPath == null
+            ? () => OpenSavedFile(entry)
+            : () => NotepadWindow.OpenOrFocusExternalFile(fullPath, entry, _targetWindow);
+        Action delete = fullPath == null
+            ? () => SavedFileStore.Delete(entry.FileName)
+            : () => { try { System.IO.File.Delete(fullPath); } catch { } RefreshCards(); };
 
-        return (card, normalBg, () => OpenSavedFile(entry), () => SavedFileStore.Delete(entry.FileName));
+        card.MouseLeftButtonUp  += (_, _) => open();
+        card.MouseRightButtonUp += (_, e) => { e.Handled = true; ShowOpenWithMenu(card, entry, fullPath); };
+
+        return (card, normalBg, open, delete);
     }
 
     // ── Keyboard navigation ───────────────────────────────────────────────
@@ -1027,9 +1234,9 @@ internal class ClipboardHistoryWindow : Window
 
     // ── Open With (right-click on file cards) ─────────────────────────────
 
-    private void ShowOpenWithMenu(UIElement anchor, SavedFileEntry entry)
+    private void ShowOpenWithMenu(UIElement anchor, SavedFileEntry entry, string? fullPath = null)
     {
-        string filePath = Formatting.SavedFileStore.GetFilePath(entry.FileName);
+        string filePath = fullPath ?? Formatting.SavedFileStore.GetFilePath(entry.FileName);
 
         var known  = OpenWithStore.GetKnownEditors();
         var recent = OpenWithStore.GetRecent();
@@ -1166,6 +1373,8 @@ internal class ClipboardHistoryWindow : Window
         SetTabActive(_appTab, _mode == HistoryMode.App, Color.FromRgb(0x44, 0x72, 0xC4));
         SetTabActive(_sysTab, _mode == HistoryMode.Global, Color.FromRgb(0x71, 0x53, 0xC4));
         SetTabActive(_filesTab, _mode == HistoryMode.Files, Color.FromRgb(0x2E, 0x7D, 0x32));
+        if (_chipsHost != null)
+            _chipsHost.Visibility = _mode == HistoryMode.Files ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private static void SetTabActive(Border tab, bool active, Color color)
@@ -1452,8 +1661,7 @@ internal class ClipboardHistoryWindow : Window
     // ── Window state persistence ──────────────────────────────────────────
 
     private static readonly string WindowStatePath = System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "MinimalNotepad", "clipboard_window_state.json");
+        MinimalNotepad.Config.AppDataPath.Root, "clipboard_window_state.json");
 
     private record ClipboardWindowState(double Left, double Top, double Width, double Height, bool HasPosition, bool SingleLine = false, HistoryMode ViewMode = HistoryMode.App);
 

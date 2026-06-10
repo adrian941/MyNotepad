@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using MinimalNotepad.Config;
 
 namespace MinimalNotepad.Formatting
 {
@@ -20,9 +21,7 @@ namespace MinimalNotepad.Formatting
     {
         const int MaxEntries = 2000;
 
-        public static readonly string SavePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "MinimalNotepad", "clipboard_history.json");
+        public static readonly string SavePath = Path.Combine(AppDataPath.Root, "clipboard_history.json");
 
         static readonly List<ClipboardEntry> _entries = new();
 

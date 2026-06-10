@@ -24,7 +24,8 @@
       "Bash(Start-Process *)",
       "PowerShell(Start-Process \"C:\\\\Developer\\\\repos-utils\\\\MyNotepad\\\\bin\\\\Debug\\\\net10.0-windows\\\\MyNotepad.exe\")",
       "Bash(taskkill /F /IM MyNotepad.exe)",
-      "Bash(grep -v \"FindReplaceBar\\\\|\\\\\\\\\\\\\\\\obj\\\\\\\\\\\\\\\\\")"
+      "Bash(grep -v \"FindReplaceBar\\\\|\\\\\\\\\\\\\\\\obj\\\\\\\\\\\\\\\\\")",
+      "PowerShell(taskkill *)"
     ]
   }
 }

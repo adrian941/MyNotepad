@@ -22,8 +22,7 @@ namespace MinimalNotepad
     static class OpenWithStore
     {
         static readonly string _savePath = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "MinimalNotepad", "openwith.json");
+            MinimalNotepad.Config.AppDataPath.Root, "openwith.json");
 
         const int MaxRecent = 5;
 
