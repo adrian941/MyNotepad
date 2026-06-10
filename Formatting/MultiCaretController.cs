@@ -57,6 +57,8 @@ namespace MinimalNotepad.Formatting
         Point _altDownPt;
         int   _altDownCaretOffset;
 
+        bool  _ctrlSelectionMode;
+
         static readonly Brush SelBrush =
             new SolidColorBrush(Color.FromArgb(0x55, 0x40, 0x80, 0xFF));
 
@@ -70,7 +72,12 @@ namespace MinimalNotepad.Formatting
             _editor      = editor;
             _applySticky = applySticky;
 
+            // Save default brushes NOW (before any Hide call) so Restore always has valid values.
+            _savedSelectionBrush      = editor.TextArea.SelectionBrush;
+            _savedSelectionForeground = editor.TextArea.SelectionForeground;
+
             editor.TextArea.TextView.BackgroundRenderers.Add(this);
+            editor.PreviewMouseLeftButtonDown          += OnMouseDownPreview; // fires before TextArea handlers
             editor.TextArea.PreviewMouseLeftButtonDown += OnMouseDown;
             editor.TextArea.PreviewMouseLeftButtonUp   += OnMouseUp;
             editor.TextArea.PreviewTextInput           += OnTextInput;
@@ -116,9 +123,39 @@ namespace MinimalNotepad.Formatting
         }
 
         // ── Mouse ─────────────────────────────────────────────────────────────────
+
+        // Registered on TextEditor (parent of TextArea) so it fires BEFORE AvalonEdit's
+        // TextArea handlers — the only way to capture the primary selection before AvalonEdit clears it.
+        void OnMouseDownPreview(object? sender, MouseButtonEventArgs e)
+        {
+            bool alt  = Keyboard.IsKeyDown(Key.LeftAlt)  || Keyboard.IsKeyDown(Key.RightAlt);
+            bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
+            if (ctrl && !alt && e.ClickCount == 1)
+            {
+                SavePrimarySelectionAsSecondary(); // save BEFORE AvalonEdit clears it
+                _ctrlSelectionMode = true;
+                if (_carets.Count > 0) EnsureBlink(); // hide native brush, start rendering secondaries
+            }
+        }
+
+        void SavePrimarySelectionAsSecondary()
+        {
+            if (_editor.TextArea.Selection.IsEmpty) return;
+            var seg = _editor.TextArea.Selection.SurroundingSegment;
+            if (seg.Length == 0) return;
+            int caretOff  = Caret.Offset;
+            int anchorOff = (caretOff == seg.Offset) ? seg.EndOffset : seg.Offset;
+            _carets.Add(new CaretState
+            {
+                Caret  = CaretAnchor(caretOff),
+                Anchor = SelectAnchor(anchorOff),
+            });
+        }
+
         void OnMouseDown(object? sender, MouseButtonEventArgs e)
         {
-            bool alt = Keyboard.IsKeyDown(Key.LeftAlt) || Keyboard.IsKeyDown(Key.RightAlt);
+            bool alt  = Keyboard.IsKeyDown(Key.LeftAlt)  || Keyboard.IsKeyDown(Key.RightAlt);
+            bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
             if (alt && e.ClickCount == 1)
             {
                 _altDown            = true;
@@ -126,7 +163,7 @@ namespace MinimalNotepad.Formatting
                 _altDownCaretOffset = Caret.Offset;
                 // Don't handle — let AvalonEdit position the primary caret / start rect-select.
             }
-            else if (!alt && Active)
+            else if (!alt && !ctrl && Active)
             {
                 Clear();
             }
@@ -134,6 +171,13 @@ namespace MinimalNotepad.Formatting
 
         void OnMouseUp(object? sender, MouseButtonEventArgs e)
         {
+            if (_ctrlSelectionMode)
+            {
+                _ctrlSelectionMode = false;
+                EnsureBlink(); // finalize: hide native if secondaries exist, restore if not
+                return;
+            }
+
             if (!_altDown) return;
             _altDown = false;
 
@@ -252,8 +296,6 @@ namespace MinimalNotepad.Formatting
         void HideNativeSelection()
         {
             if (_nativeBrushHidden) return;
-            _savedSelectionBrush      = _editor.TextArea.SelectionBrush;
-            _savedSelectionForeground = _editor.TextArea.SelectionForeground;
             _editor.TextArea.SelectionBrush      = null;
             _editor.TextArea.SelectionForeground = null;
             _nativeBrushHidden = true;
@@ -572,7 +614,11 @@ namespace MinimalNotepad.Formatting
         public void Draw(TextView tv, DrawingContext dc)
         {
             Prune();
-            if (_carets.Count == 0) return;
+            if (_carets.Count == 0)
+            {
+                RestoreNativeSelection();
+                return;
+            }
             tv.EnsureVisualLines();
             var brush = Caret.CaretBrush ?? Brushes.Black;
 

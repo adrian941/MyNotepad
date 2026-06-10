@@ -707,7 +707,8 @@ namespace MinimalNotepad
                     && !_editor.SelectedText.Contains('\n')
                     && !_editor.SelectedText.Contains('\r')
                     ? _editor.SelectedText : null;
-                FindReplaceWindow.ShowFor(_editor, this, replaceMode: false, initialText: init, settings: _settings, settingsFile: _settingsFile, fmtManager: _fmtManager, colorEntries: _colorEntries);
+                FindReplaceWindow.ShowFor(_editor, this, replaceMode: false, initialText: init, settings: _settings, settingsFile: _settingsFile, fmtManager: _fmtManager, colorEntries: _colorEntries,
+                    multiSelectFunc: () => _multiCaret.Active ? _multiCaret.GetAllSelections() : null);
                 e.Handled = true;
                 return;
             }
@@ -734,7 +735,8 @@ namespace MinimalNotepad
                         && !_editor.SelectedText.Contains('\n')
                         && !_editor.SelectedText.Contains('\r')
                         ? _editor.SelectedText : null;
-                    FindReplaceWindow.ShowFor(_editor, this, replaceMode: true, initialText: init, settings: _settings, settingsFile: _settingsFile, fmtManager: _fmtManager, colorEntries: _colorEntries);
+                    FindReplaceWindow.ShowFor(_editor, this, replaceMode: true, initialText: init, settings: _settings, settingsFile: _settingsFile, fmtManager: _fmtManager, colorEntries: _colorEntries,
+                        multiSelectFunc: () => _multiCaret.Active ? _multiCaret.GetAllSelections() : null);
                 }
                 return;
             }

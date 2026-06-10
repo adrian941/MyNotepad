@@ -35,6 +35,8 @@ namespace MinimalNotepad
         static readonly List<string> ReplaceHistory = new();
         const int MaxHistory = 100;
 
+        static Func<IReadOnlyList<(int Start, int Length)>?>? _multiSelectFunc;
+
         // ── Static API (called by NotepadWindow) ──────────────────────────────
 
         public static bool IsOpen => _instance?.IsVisible == true;
@@ -44,11 +46,13 @@ namespace MinimalNotepad
             bool replaceMode, string? initialText = null,
             AppSettings? settings = null, string settingsFile = "",
             FormattingManager? fmtManager = null,
-            IReadOnlyList<ColorEntry>? colorEntries = null)
+            IReadOnlyList<ColorEntry>? colorEntries = null,
+            Func<IReadOnlyList<(int Start, int Length)>?>? multiSelectFunc = null)
         {
             if (settings != null)      { _appSettings = settings; _appSettingsFile = settingsFile; }
             if (fmtManager != null)    _staticFmtManager   = fmtManager;
             if (colorEntries != null)  _staticColorEntries = colorEntries;
+            if (multiSelectFunc != null) _multiSelectFunc  = multiSelectFunc;
 
             if (_instance != null && _instance.IsLoaded && _instance.Owner != callerWindow)
             {
@@ -372,7 +376,14 @@ namespace MinimalNotepad
 
         IEnumerable<(int Start, int Length)> MatchesInScope()
         {
-            if (!_inSelectionOnly || _target == null || _target.SelectionLength == 0) return _matches;
+            if (!_inSelectionOnly) return _matches;
+
+            var multiRanges = _multiSelectFunc?.Invoke();
+            if (multiRanges != null && multiRanges.Count > 0)
+                return _matches.Where(m => multiRanges.Any(r =>
+                    m.Start >= r.Start && m.Start + m.Length <= r.Start + r.Length));
+
+            if (_target == null || _target.SelectionLength == 0) return _matches;
             int selStart = _target.SelectionStart;
             int selEnd   = selStart + _target.SelectionLength;
             return _matches.Where(m => m.Start >= selStart && m.Start + m.Length <= selEnd);
