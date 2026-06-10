@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using ICSharpCode.AvalonEdit;
+using ICSharpCode.AvalonEdit.Editing;
 using ICSharpCode.AvalonEdit.Folding;
 using ICSharpCode.AvalonEdit.Highlighting;
 using MinimalNotepad.Config;
@@ -48,6 +49,7 @@ namespace MinimalNotepad
         private CodeBlockPaddingGenerator      _codePaddingGenerator      = null!;
         private CodeBlockFontSizeTransformer  _codeFontSizeTransformer = null!;
         private CodeBlockCopyOverlay          _copyOverlay            = null!;
+        private MultiCaretController          _multiCaret             = null!;
         private System.Windows.Controls.Canvas _overlayCanvas         = null!;
         private System.Windows.Threading.DispatcherTimer _reParseTimer = null!;
         private System.Windows.Threading.DispatcherTimer? _windowStateSaveTimer;
@@ -296,6 +298,8 @@ namespace MinimalNotepad
 
         void WireEvents()
         {
+            _multiCaret = new MultiCaretController(_editor, ApplyStickyFormatting);
+
             _editor.TextChanged += OnTextChanged;
             _editor.TextArea.Caret.PositionChanged += OnCaretPositionChanged;
             _editor.PreviewMouseWheel += OnPreviewMouseWheel;
@@ -420,6 +424,46 @@ namespace MinimalNotepad
             bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
             bool alt  = Keyboard.IsKeyDown(Key.LeftAlt)  || Keyboard.IsKeyDown(Key.RightAlt);
 
+            // Multi-caret (Alt+Click): route keys to all cursors.
+            if (_multiCaret.Active)
+            {
+                if (ctrl && !alt)
+                {
+                    bool isNav = e.Key is Key.Left or Key.Right or Key.Up or Key.Down
+                                          or Key.Home or Key.End;
+                    if (isNav)
+                    {
+                        // Ctrl+Arrow / Ctrl+Shift+Arrow: move/extend all secondaries;
+                        // primary moves naturally via AvalonEdit (e.Handled stays false).
+                        _multiCaret.HandleKey(e.Key);
+                        // fall through → HandleCtrlShortcut won't match nav keys
+                    }
+                    else if (e.Key == Key.C || e.Key == Key.X)
+                    {
+                        if (MultiCaretCopyOrCut(e.Key == Key.X)) { e.Handled = true; return; }
+                        _multiCaret.Clear(); // no active selections → collapse, run normal copy
+                    }
+                    else if (e.Key != Key.LeftCtrl && e.Key != Key.RightCtrl)
+                    {
+                        // Formatting keys → don't collapse; ApplyFormatting handles all carets.
+                        bool isFmt = e.Key is Key.B or Key.I or Key.U or Key.F5
+                                  || (e.Key >= Key.D0 && e.Key <= Key.D9)
+                                  || (e.Key >= Key.NumPad0 && e.Key <= Key.NumPad9);
+                        if (!isFmt) _multiCaret.Clear(); // Ctrl+Z, Ctrl+V, etc. → collapse
+                        // fall through to HandleCtrlShortcut in all cases
+                    }
+                }
+                else if (ctrl && alt)
+                {
+                    _multiCaret.Clear(); // Ctrl+Alt combos (e.g. clipboard history) → collapse
+                }
+                else if (!alt && _multiCaret.HandleKey(e.Key))
+                {
+                    e.Handled = true;
+                    return;
+                }
+            }
+
             // Ctrl+Alt+V → clipboard history (App or Global, never Files)
             if (ctrl && alt && (e.Key == Key.V || (e.Key == Key.System && e.SystemKey == Key.V)))
             {
@@ -447,7 +491,23 @@ namespace MinimalNotepad
             if (e.Key == Key.System && e.SystemKey == Key.U && !ctrl)
             {
                 bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
-                if (_editor.SelectionLength > 0)
+                if (_multiCaret.Active)
+                {
+                    var sels = _multiCaret.GetAllSelections();
+                    if (sels.Count > 0)
+                    {
+                        _editor.Document.BeginUpdate();
+                        foreach (var (start, len) in sels.OrderByDescending(s => s.Start))
+                        {
+                            if (len == 0) continue;
+                            string src         = _editor.Document.GetText(start, len);
+                            string transformed = shift ? src.ToUpperInvariant() : src.ToLowerInvariant();
+                            _editor.Document.Replace(start, len, transformed);
+                        }
+                        _editor.Document.EndUpdate();
+                    }
+                }
+                else if (_editor.SelectionLength > 0)
                 {
                     string transformed = shift
                         ? _editor.SelectedText.ToUpperInvariant()
@@ -474,6 +534,7 @@ namespace MinimalNotepad
             if (e.Key == Key.Space && !ctrl && !alt)
             {
                 e.Handled = true;
+                if (_multiCaret.Active) { _multiCaret.InsertNbspAll(); return; }
                 int offset = _editor.CaretOffset;
                 _editor.Document.Insert(offset, "\u00A0");
                 _editor.CaretOffset = offset + 1;
@@ -483,6 +544,15 @@ namespace MinimalNotepad
 
         void HandleCtrlShortcut(KeyEventArgs e)
         {
+            // ── Ctrl+Shift+Left/Right: word selection that stops at word boundary (no trailing spaces) ──
+            bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+            if (shift && (e.Key == Key.Left || e.Key == Key.Right))
+            {
+                ExtendPrimaryWordSelection(e.Key == Key.Right);
+                e.Handled = true;
+                return;
+            }
+
             // ── Clipboard shortcuts ───────────────────────────────────────────
 
             // Copy: put rich + plain text on clipboard; AvalonEdit won't see it
@@ -549,7 +619,6 @@ namespace MinimalNotepad
 
             // ── Text color: Ctrl+1 … Ctrl+5 ───────────────────────────────────
             int digitKey = DigitKeyNumber(e.Key);
-            bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
 
             if (digitKey >= 1 && digitKey <= 5)
             {
@@ -741,20 +810,33 @@ namespace MinimalNotepad
 
         void ApplyFormatting(Action<int, int> action)
         {
-            var selection = _editor.TextArea.Selection;
-            if (selection.IsEmpty) return;
+            var before  = _fmtManager.TakeSnapshot();
+            bool touched = false;
 
-            var before = _fmtManager.TakeSnapshot();
-            foreach (var segment in selection.Segments)
+            if (_multiCaret.Active)
             {
-                if (segment.StartOffset < segment.EndOffset)
-                    action(segment.StartOffset, segment.EndOffset);
+                // Apply to every selection across all carets (primary + secondaries).
+                foreach (var (start, len) in _multiCaret.GetAllSelections())
+                {
+                    if (len > 0) { action(start, start + len); touched = true; }
+                }
             }
-            var after = _fmtManager.TakeSnapshot();
+            else
+            {
+                var selection = _editor.TextArea.Selection;
+                if (selection.IsEmpty) return;
+                foreach (var seg in selection.Segments)
+                {
+                    if (seg.StartOffset < seg.EndOffset)
+                    { action(seg.StartOffset, seg.EndOffset); touched = true; }
+                }
+            }
 
+            if (!touched) return;
+
+            var after = _fmtManager.TakeSnapshot();
             _editor.Document.UndoStack.Push(
                 new FormattingUndoOperation(_fmtManager, before, after, _editor.TextArea.TextView));
-
             _editor.TextArea.TextView.Redraw();
         }
 
@@ -1352,6 +1434,28 @@ namespace MinimalNotepad
 
         // ── Copy helper: strips spans if selection is inside a code block ────
 
+        void ExtendPrimaryWordSelection(bool forward)
+        {
+            var ta       = _editor.TextArea;
+            int caretOff = ta.Caret.Offset;
+
+            int anchor;
+            if (ta.Selection.IsEmpty)
+            {
+                anchor = caretOff;
+            }
+            else
+            {
+                var seg = ta.Selection.SurroundingSegment;
+                anchor = caretOff == seg.Offset ? seg.EndOffset : seg.Offset;
+            }
+
+            int newCaret = _multiCaret.WordBoundaryForSelect(caretOff, forward);
+            ta.Selection = Selection.Create(ta, anchor, newCaret);
+            ta.Caret.Offset = newCaret;
+            ta.Caret.BringCaretToView();
+        }
+
         List<FormattingManager.SpanRecord> SpansForCopy(int selStart, int selLen)
         {
             int selEnd = selStart + selLen;
@@ -1361,6 +1465,48 @@ namespace MinimalNotepad
                     return new List<FormattingManager.SpanRecord>(); // plain text only
             }
             return _fmtManager.TakeSnapshot();
+        }
+
+        /// <summary>
+        /// Multi-caret Ctrl+C / Ctrl+X: joins all selections with "\n", builds combined
+        /// rich spans, puts rich + plain on clipboard. Returns false when no selections exist.
+        /// </summary>
+        bool MultiCaretCopyOrCut(bool cut)
+        {
+            var selections = _multiCaret.GetAllSelections();
+            if (selections.Count == 0) return false;
+
+            var texts = selections.Select(s => _editor.Document.GetText(s.Start, s.Length)).ToList();
+            string combined = string.Join("\n", texts);
+
+            // Build relative spans for the combined string.
+            var combinedSpans = new List<FormattingManager.SpanRecord>();
+            int writeOffset = 0;
+            for (int i = 0; i < selections.Count; i++)
+            {
+                var (start, len) = selections[i];
+                var relSpans = _fmtManager.GetRelativeSpansForRange(start, start + len);
+                foreach (var sp in relSpans)
+                    combinedSpans.Add(new FormattingManager.SpanRecord(
+                        sp.Start + writeOffset, sp.End + writeOffset, sp.Format));
+                writeOffset += texts[i].Length + 1; // +1 for the '\n' separator
+            }
+
+            // RichClipboard.Copy filters spans by [selectionStart, selectionStart+text.Length].
+            // Passing selectionStart=0 keeps all our relative spans intact.
+            var richJson = RichClipboard.Copy(combined, combinedSpans, 0);
+            ClipboardHistory.Push(combined, richJson);
+
+            if (cut)
+            {
+                _editor.Document.BeginUpdate();
+                foreach (var (start, len) in selections.OrderByDescending(s => s.Start))
+                    _editor.Document.Remove(start, len);
+                _editor.Document.EndUpdate();
+                _editor.TextArea.ClearSelection();
+                _multiCaret.Clear();
+            }
+            return true;
         }
 
         // ── Language picker popup (Ctrl+,) ────────────────────────────────────
