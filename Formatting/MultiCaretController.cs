@@ -13,20 +13,18 @@ using ICSharpCode.AvalonEdit.Rendering;
 namespace MinimalNotepad.Formatting
 {
     /// <summary>
-    /// VSCode-style multi-cursor (Alt+Click) layered on AvalonEdit's single caret.
+    /// VSCode-style multi-cursor (Alt+Click / Alt+Drag) layered on AvalonEdit's single caret.
     ///
     /// Primary caret stays AvalonEdit's own. Each extra caret is a <see cref="CaretState"/>
     /// backed by <see cref="TextAnchor"/>s that auto-track document edits.
     ///
-    /// – Alt+Click  → add secondary caret at that point (Alt+Click again removes it)
-    /// – Arrow keys → move ALL secondary carets; primary moves naturally (not handled)
-    /// – Shift+Arrow → extend selection at ALL secondary carets; primary extends naturally
-    /// – Ctrl+Arrow  → word-jump at ALL carets
+    /// – Alt+Click       → add secondary caret at that point (Alt+Click again removes it)
+    /// – Alt+Drag        → rectangular selection converted to one caret per line on mouse-up
+    /// – Arrow keys      → move ALL secondary carets; primary moves naturally (not handled)
+    /// – Shift+Arrow     → extend selection at ALL secondary carets; primary extends naturally
+    /// – Ctrl+Arrow      → word-jump at ALL carets
     /// – Enter / Backspace / Delete / text → replayed at every caret in one undo group
     /// – Plain click / Escape → collapse back to single caret
-    ///
-    /// Alt+drag (AvalonEdit rectangular selection) is left untouched — we only react to
-    /// Alt+click (mouse up with no movement and empty selection).
     /// </summary>
     class MultiCaretController : IBackgroundRenderer
     {
@@ -50,6 +48,10 @@ namespace MinimalNotepad.Formatting
         readonly List<CaretState> _carets = new();
         readonly DispatcherTimer  _blink;
         bool _blinkOn = true;
+
+        bool   _nativeBrushHidden;
+        Brush? _savedSelectionBrush;
+        Brush? _savedSelectionForeground;
 
         bool  _altDown;
         Point _altDownPt;
@@ -131,9 +133,26 @@ namespace MinimalNotepad.Formatting
             if (!_altDown) return;
             _altDown = false;
 
-            Point up = e.GetPosition(_editor.TextArea.TextView);
-            if (Math.Abs(up.X - _altDownPt.X) > 3 || Math.Abs(up.Y - _altDownPt.Y) > 3) return;
-            if (!_editor.TextArea.Selection.IsEmpty) return;   // was a rect-drag
+            Point up     = e.GetPosition(_editor.TextArea.TextView);
+            bool wasDrag = Math.Abs(up.X - _altDownPt.X) > 3 || Math.Abs(up.Y - _altDownPt.Y) > 3;
+
+            if (wasDrag)
+            {
+                if (_editor.TextArea.Selection is RectangleSelection)
+                {
+                    // Capture data NOW before AvalonEdit's own mouse-up handler runs.
+                    // Defer conversion so AvalonEdit fully cleans up its drag state first.
+                    var segs = _editor.TextArea.Selection.Segments
+                        .Select(s => (Start: s.StartOffset, End: s.EndOffset))
+                        .ToList();
+                    int caretOff = Caret.Offset;
+                    _editor.Dispatcher.BeginInvoke(DispatcherPriority.Input,
+                        (Action)(() => ConvertRectSegmentsToMultiCaret(segs, caretOff)));
+                }
+                return;
+            }
+
+            if (!_editor.TextArea.Selection.IsEmpty) return;
 
             int clicked  = Caret.Offset;
             int previous = _altDownCaretOffset;
@@ -144,6 +163,45 @@ namespace MinimalNotepad.Formatting
             if (hit != null) { _carets.Remove(hit); Redraw(); EnsureBlink(); return; }
 
             AddCaret(previous);
+            Redraw();
+            EnsureBlink();
+        }
+
+        void ConvertRectSegmentsToMultiCaret(List<(int Start, int End)> segments, int originalCaret)
+        {
+            if (segments.Count < 2) return;
+
+            _carets.Clear();
+
+            // Detect which column edge the caret was on during the drag.
+            bool caretAtEnd = segments.Any(s => s.End == originalCaret)
+                           || !segments.Any(s => s.Start == originalCaret);
+
+            // First segment → primary AvalonEdit selection
+            var first    = segments[0];
+            int f_caret  = caretAtEnd ? first.End   : first.Start;
+            int f_anchor = caretAtEnd ? first.Start : first.End;
+
+            if (f_caret != f_anchor)
+                _editor.TextArea.Selection = Selection.Create(_editor.TextArea, f_anchor, f_caret);
+            else
+                _editor.TextArea.ClearSelection();
+            Caret.Offset = f_caret;
+
+            // Remaining segments → secondary carets
+            for (int i = 1; i < segments.Count; i++)
+            {
+                var seg      = segments[i];
+                int caretOff  = caretAtEnd ? seg.End   : seg.Start;
+                int anchorOff = caretAtEnd ? seg.Start : seg.End;
+
+                _carets.Add(new CaretState
+                {
+                    Caret  = CaretAnchor(caretOff),
+                    Anchor = caretOff != anchorOff ? SelectAnchor(anchorOff) : null,
+                });
+            }
+
             Redraw();
             EnsureBlink();
         }
@@ -160,6 +218,7 @@ namespace MinimalNotepad.Formatting
             if (_carets.Count == 0) return;
             _carets.Clear();
             _blink.Stop();
+            RestoreNativeSelection();
             Redraw();
         }
 
@@ -167,8 +226,34 @@ namespace MinimalNotepad.Formatting
         {
             Prune();
             _blinkOn = true;
-            if (_carets.Count > 0 && !_blink.IsEnabled) _blink.Start();
-            else if (_carets.Count == 0)                 _blink.Stop();
+            if (_carets.Count > 0)
+            {
+                HideNativeSelection();
+                if (!_blink.IsEnabled) _blink.Start();
+            }
+            else
+            {
+                _blink.Stop();
+                RestoreNativeSelection();
+            }
+        }
+
+        void HideNativeSelection()
+        {
+            if (_nativeBrushHidden) return;
+            _savedSelectionBrush      = _editor.TextArea.SelectionBrush;
+            _savedSelectionForeground = _editor.TextArea.SelectionForeground;
+            _editor.TextArea.SelectionBrush      = null;
+            _editor.TextArea.SelectionForeground = null;
+            _nativeBrushHidden = true;
+        }
+
+        void RestoreNativeSelection()
+        {
+            if (!_nativeBrushHidden) return;
+            _editor.TextArea.SelectionBrush      = _savedSelectionBrush;
+            _editor.TextArea.SelectionForeground = _savedSelectionForeground;
+            _nativeBrushHidden = false;
         }
 
         // ── Text input ────────────────────────────────────────────────────────────
@@ -475,6 +560,20 @@ namespace MinimalNotepad.Formatting
             tv.EnsureVisualLines();
             var brush = Caret.CaretBrush ?? Brushes.Black;
 
+            // Primary selection — drawn with our brush since native SelectionBrush is suppressed
+            var primSel = _editor.TextArea.Selection;
+            if (!primSel.IsEmpty)
+            {
+                var ss = primSel.SurroundingSegment;
+                if (ss.Length > 0)
+                {
+                    var seg = new TextSegment { StartOffset = ss.Offset, Length = ss.Length };
+                    foreach (var r in BackgroundGeometryBuilder.GetRectsForSegment(tv, seg))
+                        dc.DrawRectangle(SelBrush, null, r);
+                }
+            }
+
+            // Secondary carets
             foreach (var cs in _carets)
             {
                 if (cs.Caret.IsDeleted) continue;
