@@ -12,20 +12,6 @@ using ICSharpCode.AvalonEdit.Rendering;
 
 namespace MinimalNotepad.Formatting
 {
-    /// <summary>
-    /// VSCode-style multi-cursor (Alt+Click / Alt+Drag) layered on AvalonEdit's single caret.
-    ///
-    /// Primary caret stays AvalonEdit's own. Each extra caret is a <see cref="CaretState"/>
-    /// backed by <see cref="TextAnchor"/>s that auto-track document edits.
-    ///
-    /// – Alt+Click       → add secondary caret at that point (Alt+Click again removes it)
-    /// – Alt+Drag        → rectangular selection converted to one caret per line on mouse-up
-    /// – Arrow keys      → move ALL secondary carets; primary moves naturally (not handled)
-    /// – Shift+Arrow     → extend selection at ALL secondary carets; primary extends naturally
-    /// – Ctrl+Arrow      → word-jump at ALL carets
-    /// – Enter / Backspace / Delete / text → replayed at every caret in one undo group
-    /// – Plain click / Escape → collapse back to single caret
-    /// </summary>
     class MultiCaretController : IBackgroundRenderer
     {
         // ── Per-cursor state ──────────────────────────────────────────────────────
@@ -44,20 +30,23 @@ namespace MinimalNotepad.Formatting
 
         // ── Fields ────────────────────────────────────────────────────────────────
         readonly TextEditor       _editor;
-        readonly Action<int, int> _applySticky;   // NotepadWindow.ApplyStickyFormatting
+        readonly Action<int, int> _applySticky;
         readonly List<CaretState> _carets = new();
         readonly DispatcherTimer  _blink;
         bool _blinkOn = true;
 
-        bool   _nativeBrushHidden;
-        Brush? _savedSelectionBrush;
-        Brush? _savedSelectionForeground;
 
         bool  _altDown;
         Point _altDownPt;
         int   _altDownCaretOffset;
 
-        bool  _ctrlSelectionMode;
+        // Ctrl+drag selection mode
+        bool       _ctrlSelectionMode;
+        int        _ctrlDragStartOff;
+
+        // Tracks the user's explicitly-dragged primary selection (set after Ctrl+drag / Alt+drag).
+        // Persists through Find navigation so we draw/scope the RIGHT region, not the Find match.
+        CaretState? _userPrimaryCS;
 
         static readonly Brush SelBrush =
             new SolidColorBrush(Color.FromArgb(0x55, 0x40, 0x80, 0xFF));
@@ -72,12 +61,9 @@ namespace MinimalNotepad.Formatting
             _editor      = editor;
             _applySticky = applySticky;
 
-            // Save default brushes NOW (before any Hide call) so Restore always has valid values.
-            _savedSelectionBrush      = editor.TextArea.SelectionBrush;
-            _savedSelectionForeground = editor.TextArea.SelectionForeground;
 
             editor.TextArea.TextView.BackgroundRenderers.Add(this);
-            editor.PreviewMouseLeftButtonDown          += OnMouseDownPreview; // fires before TextArea handlers
+            editor.PreviewMouseLeftButtonDown          += OnMouseDownPreview; // fires BEFORE TextArea handlers
             editor.TextArea.PreviewMouseLeftButtonDown += OnMouseDown;
             editor.TextArea.PreviewMouseLeftButtonUp   += OnMouseUp;
             editor.TextArea.PreviewTextInput           += OnTextInput;
@@ -91,18 +77,19 @@ namespace MinimalNotepad.Formatting
 
         public bool Active
         {
-            get { Prune(); return _carets.Count > 0; }
+            get { Prune(); return _ctrlSelectionMode || _carets.Count > 0 || _userPrimaryCS != null; }
         }
 
         void Prune()
         {
             _carets.RemoveAll(c => c.Caret.IsDeleted);
-            if (_carets.Count == 0) RestoreNativeSelection();
+            if (_userPrimaryCS?.Caret.IsDeleted == true) _userPrimaryCS = null;
+            SyncNativeSelectionBrush();
         }
 
         /// <summary>
         /// Returns all non-empty selections (primary + secondaries) sorted by start offset.
-        /// Used by NotepadWindow for Ctrl+C / Ctrl+X multi-caret copy.
+        /// Used for Ctrl+C / Ctrl+X multi-caret copy/cut.
         /// </summary>
         public IReadOnlyList<(int Start, int Length)> GetAllSelections()
         {
@@ -122,20 +109,66 @@ namespace MinimalNotepad.Formatting
             return result;
         }
 
+        /// <summary>
+        /// Returns only the user-explicitly-dragged selections (Ctrl+drag / Alt+drag),
+        /// independent of Find navigation that may have replaced the primary AvalonEdit selection.
+        /// Used for "Find in Selection" / "Style in Selection" scope.
+        /// </summary>
+        public IReadOnlyList<(int Start, int Length)> GetUserMultiSelections()
+        {
+            Prune();
+            var result = new List<(int Start, int Length)>();
+            if (_userPrimaryCS != null && !_userPrimaryCS.Caret.IsDeleted && _userPrimaryCS.HasSelection)
+                result.Add((_userPrimaryCS.SelectionStart, _userPrimaryCS.SelectionLength));
+            foreach (var cs in _carets.Where(c => !c.Caret.IsDeleted && c.HasSelection))
+                result.Add((cs.SelectionStart, cs.SelectionLength));
+            result.Sort((a, b) => a.Start.CompareTo(b.Start));
+            return result;
+        }
+
         // ── Mouse ─────────────────────────────────────────────────────────────────
 
-        // Registered on TextEditor (parent of TextArea) so it fires BEFORE AvalonEdit's
-        // TextArea handlers — the only way to capture the primary selection before AvalonEdit clears it.
+        // On TextEditor (parent) — fires BEFORE AvalonEdit's TextArea handlers.
+        // Only Ctrl+drag entry point: we need to intercept BEFORE AvalonEdit does word-select.
         void OnMouseDownPreview(object? sender, MouseButtonEventArgs e)
         {
             bool alt  = Keyboard.IsKeyDown(Key.LeftAlt)  || Keyboard.IsKeyDown(Key.RightAlt);
             bool ctrl = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
             if (ctrl && !alt && e.ClickCount == 1)
             {
-                SavePrimarySelectionAsSecondary(); // save BEFORE AvalonEdit clears it
+                SavePrimarySelectionAsSecondary(); // capture BEFORE AvalonEdit clears it
+                e.Handled = true;                 // prevent AvalonEdit's Ctrl+click word-select
+
+                var tv  = _editor.TextArea.TextView;
+                int off = OffsetFromPoint(tv, e.GetPosition(tv));
+                _ctrlDragStartOff  = off;
                 _ctrlSelectionMode = true;
-                if (_carets.Count > 0) EnsureBlink(); // hide native brush, start rendering secondaries
+
+                _editor.TextArea.Caret.Offset = off;
+                _editor.TextArea.Selection    = Selection.Create(_editor.TextArea, off, off);
+                _editor.TextArea.CaptureMouse();
+                _editor.TextArea.MouseMove   += OnCtrlMouseMove;
+                SyncNativeSelectionBrush(); // hide now — Draw() renders the in-progress drag instead
             }
+        }
+
+        void OnCtrlMouseMove(object? sender, MouseEventArgs e)
+        {
+            if (!_ctrlSelectionMode) return;
+            var tv  = _editor.TextArea.TextView;
+            int off = OffsetFromPoint(tv, e.GetPosition(tv));
+            _editor.TextArea.Selection    = Selection.Create(_editor.TextArea, _ctrlDragStartOff, off);
+            _editor.TextArea.Caret.Offset = off;
+            Redraw();
+        }
+
+        int OffsetFromPoint(TextView tv, Point pt)
+        {
+            tv.EnsureVisualLines();
+            var pos = tv.GetPosition(pt + tv.ScrollOffset);
+            if (pos.HasValue)
+                return _editor.Document.GetOffset(pos.Value.Line, pos.Value.Column);
+            return pt.Y < 0 ? 0 : _editor.Document.TextLength;
         }
 
         void SavePrimarySelectionAsSecondary()
@@ -161,7 +194,6 @@ namespace MinimalNotepad.Formatting
                 _altDown            = true;
                 _altDownPt          = e.GetPosition(_editor.TextArea.TextView);
                 _altDownCaretOffset = Caret.Offset;
-                // Don't handle — let AvalonEdit position the primary caret / start rect-select.
             }
             else if (!alt && !ctrl && Active)
             {
@@ -173,8 +205,25 @@ namespace MinimalNotepad.Formatting
         {
             if (_ctrlSelectionMode)
             {
+                _editor.TextArea.MouseMove -= OnCtrlMouseMove;
+                _editor.TextArea.ReleaseMouseCapture();
                 _ctrlSelectionMode = false;
-                EnsureBlink(); // finalize: hide native if secondaries exist, restore if not
+
+                // Save the drag result as the user's explicit primary selection.
+                // This persists through Find navigation (which replaces _editor.TextArea.Selection).
+                var sel = _editor.TextArea.Selection;
+                if (!sel.IsEmpty && sel.SurroundingSegment.Length > 0)
+                {
+                    var ss = sel.SurroundingSegment;
+                    int caretOff  = Caret.Offset;
+                    int anchorOff = (caretOff == ss.Offset) ? ss.EndOffset : ss.Offset;
+                    _userPrimaryCS = new CaretState
+                    {
+                        Caret  = CaretAnchor(caretOff),
+                        Anchor = SelectAnchor(anchorOff),
+                    };
+                }
+                EnsureBlink();
                 return;
             }
 
@@ -188,8 +237,6 @@ namespace MinimalNotepad.Formatting
             {
                 if (_editor.TextArea.Selection is RectangleSelection)
                 {
-                    // Capture data NOW before AvalonEdit's own mouse-up handler runs.
-                    // Defer conversion so AvalonEdit fully cleans up its drag state first.
                     var segs = _editor.TextArea.Selection.Segments
                         .Select(s => (Start: s.StartOffset, End: s.EndOffset))
                         .ToList();
@@ -206,7 +253,6 @@ namespace MinimalNotepad.Formatting
             int previous = _altDownCaretOffset;
             if (clicked == previous) return;
 
-            // Alt+click on an existing secondary → toggle off
             var hit = _carets.FirstOrDefault(c => !c.Caret.IsDeleted && c.Caret.Offset == clicked);
             if (hit != null) { _carets.Remove(hit); Redraw(); EnsureBlink(); return; }
 
@@ -220,20 +266,29 @@ namespace MinimalNotepad.Formatting
             if (segments.Count < 2) return;
 
             _carets.Clear();
+            _userPrimaryCS = null;
 
-            // Detect which column edge the caret was on during the drag.
             bool caretAtEnd = segments.Any(s => s.End == originalCaret)
                            || !segments.Any(s => s.Start == originalCaret);
 
-            // First segment → primary AvalonEdit selection
+            // First segment → primary AvalonEdit selection + save as _userPrimaryCS
             var first    = segments[0];
             int f_caret  = caretAtEnd ? first.End   : first.Start;
             int f_anchor = caretAtEnd ? first.Start : first.End;
 
             if (f_caret != f_anchor)
+            {
                 _editor.TextArea.Selection = Selection.Create(_editor.TextArea, f_anchor, f_caret);
+                _userPrimaryCS = new CaretState
+                {
+                    Caret  = CaretAnchor(f_caret),
+                    Anchor = SelectAnchor(f_anchor),
+                };
+            }
             else
+            {
                 _editor.TextArea.ClearSelection();
+            }
             Caret.Offset = f_caret;
 
             // Remaining segments → secondary carets
@@ -260,53 +315,72 @@ namespace MinimalNotepad.Formatting
             _carets.Add(new CaretState { Caret = CaretAnchor(offset) });
         }
 
-        /// <summary>
-        /// Called by NotepadWindow immediately after Doc.BeginUpdate() in EditAll,
-        /// so it runs inside the undo group — allows NotepadWindow to push a
-        /// FormattingRestoreOperation paired with the multi-caret text edits.
-        /// </summary>
         public Action? PreEditHook { get; set; }
 
         // ── Public API ────────────────────────────────────────────────────────────
         public void Clear()
         {
-            if (_carets.Count == 0) return;
             _carets.Clear();
+            _userPrimaryCS = null;
             _blink.Stop();
-            RestoreNativeSelection();
+            SyncNativeSelectionBrush();
             Redraw();
         }
 
         void EnsureBlink()
         {
-            Prune();
+            _carets.RemoveAll(c => c.Caret.IsDeleted);
+            if (_userPrimaryCS?.Caret.IsDeleted == true) _userPrimaryCS = null;
             _blinkOn = true;
-            if (_carets.Count > 0)
+            bool anyActive = _ctrlSelectionMode || _carets.Count > 0 || _userPrimaryCS != null;
+            if (anyActive)
             {
-                HideNativeSelection();
                 if (!_blink.IsEnabled) _blink.Start();
             }
             else
             {
                 _blink.Stop();
-                RestoreNativeSelection();
             }
+            SyncNativeSelectionBrush();
         }
 
-        void HideNativeSelection()
+        /// <summary>
+        /// The single authoritative point that decides whether AvalonEdit's native selection
+        /// brush should be suppressed. No boolean flag to desync — the decision is recomputed
+        /// from live state every call. Called after every state change AND from Draw(), so even
+        /// if another subsystem (e.g. Find) leaves a stale value, the next render self-heals.
+        ///
+        /// KEY: AvalonEdit's default blue comes from the control template's STYLE setter, not a
+        /// local value (a fresh TextArea.SelectionBrush is null). To hide we set a LOCAL
+        /// Transparent (local value wins over the style setter). To restore we must ClearValue()
+        /// — NOT set null — so the property falls back to the style setter's blue again. Setting
+        /// null locally would permanently override the style and lose the selection color.
+        ///
+        /// Sentinel = Brushes.Transparent. We only ever clear when the brush is STILL our
+        /// sentinel — so we never clobber a brush another owner (Find's orange) legitimately set.
+        /// </summary>
+        void SyncNativeSelectionBrush()
         {
-            if (_nativeBrushHidden) return;
-            _editor.TextArea.SelectionBrush      = null;
-            _editor.TextArea.SelectionForeground = null;
-            _nativeBrushHidden = true;
-        }
+            bool needHidden = _ctrlSelectionMode || _carets.Count > 0 || _userPrimaryCS != null;
+            var cur = _editor.TextArea.SelectionBrush;
 
-        void RestoreNativeSelection()
-        {
-            if (!_nativeBrushHidden) return;
-            _editor.TextArea.SelectionBrush      = _savedSelectionBrush;
-            _editor.TextArea.SelectionForeground = _savedSelectionForeground;
-            _nativeBrushHidden = false;
+            if (needHidden)
+            {
+                if (!ReferenceEquals(cur, Brushes.Transparent))
+                    _editor.TextArea.SelectionBrush = Brushes.Transparent;
+                // Null foreground so SelectionForegroundOverride skips — text keeps its own color.
+                if (_editor.TextArea.SelectionForeground != null)
+                    _editor.TextArea.SelectionForeground = null;
+            }
+            else
+            {
+                // Revert to the style/template defaults ONLY if it's still our sentinel.
+                if (ReferenceEquals(cur, Brushes.Transparent))
+                {
+                    _editor.TextArea.ClearValue(TextArea.SelectionBrushProperty);
+                    _editor.TextArea.ClearValue(TextArea.SelectionForegroundProperty);
+                }
+            }
         }
 
         // ── Text input ────────────────────────────────────────────────────────────
@@ -317,14 +391,9 @@ namespace MinimalNotepad.Formatting
             e.Handled = true;
         }
 
-        public void InsertNbspAll() => RunInsert(" ");
+        public void InsertNbspAll() => RunInsert(" ");
 
         // ── Key routing ───────────────────────────────────────────────────────────
-        /// <summary>
-        /// Returns true if the key was fully handled (caller must set e.Handled).
-        /// Returns false if the primary should also process the key normally.
-        /// Navigation keys always return false (primary moves naturally via AvalonEdit).
-        /// </summary>
         public bool HandleKey(Key key)
         {
             if (!Active) return false;
@@ -338,7 +407,7 @@ namespace MinimalNotepad.Formatting
                     if   (shift && ctrl)  ExtendAll(cs => FindPrevSelect(cs.Caret.Offset));
                     else if (shift)       ExtendAll(cs => FindPrev(cs.Caret.Offset, false));
                     else                  MoveAll  (cs => FindPrev(cs.Caret.Offset, ctrl));
-                    return false;   // primary handled by AvalonEdit / NotepadWindow
+                    return false;
 
                 case Key.Right:
                     if   (shift && ctrl)  ExtendAll(cs => FindNextSelect(cs.Caret.Offset));
@@ -374,8 +443,6 @@ namespace MinimalNotepad.Formatting
             return false;
         }
 
-        // Navigate: move or extend selection for each secondary caret.
-        // Primary is NOT touched here — AvalonEdit handles it (we return false from HandleKey).
         void Navigate(bool extend, Func<CaretState, int> calcNew)
         {
             Prune();
@@ -421,18 +488,10 @@ namespace MinimalNotepad.Formatting
             if (!hadSel && offset < Doc.TextLength) Doc.Remove(offset, 1);
         });
 
-        /// <summary>
-        /// Core edit dispatcher. Runs <paramref name="action"/>(caretOffset, hadSelection) at
-        /// every caret (all secondaries + primary) inside a single undo group.
-        ///
-        /// Order: descending by region-start so edits at high offsets don't shift lower ones.
-        /// TextAnchors auto-adjust for all movements.
-        /// </summary>
         void EditAll(Action<int, bool> action)
         {
             Prune();
 
-            // ─ Capture primary selection ─
             TextAnchor? primSelAnchor = null;
             if (!_editor.TextArea.Selection.IsEmpty)
             {
@@ -441,13 +500,11 @@ namespace MinimalNotepad.Formatting
             }
             var primCaret = CaretAnchor(Caret.Offset);
 
-            // ─ Build flat (caretAnchor, selAnchor?) list ─
             var all = _carets
                 .Select(cs => (cs.Caret, cs.Anchor))
                 .Append((primCaret, primSelAnchor))
                 .OrderByDescending(t =>
                 {
-                    // sort by the leftmost end of each cursor's affected range (descending)
                     int caretOff = t.Item1.Offset;
                     int selOff   = (t.Item2 != null && !t.Item2.IsDeleted) ? t.Item2.Offset : caretOff;
                     return Math.Min(caretOff, selOff);
@@ -455,7 +512,7 @@ namespace MinimalNotepad.Formatting
                 .ToList();
 
             Doc.BeginUpdate();
-            PreEditHook?.Invoke(); // NotepadWindow pushes FormattingRestoreOperation here
+            PreEditHook?.Invoke();
             try
             {
                 foreach (var (caretA, selA) in all)
@@ -472,26 +529,18 @@ namespace MinimalNotepad.Formatting
             }
             finally { Doc.EndUpdate(); }
 
-            // Position primary caret and force-collapse its selection.
-            // Using Selection.Create instead of ClearSelection() because AvalonEdit tracks
-            // its own selection anchors (BeforeInsertion/AfterInsertion) that survive the
-            // delete+insert cycle and land at different offsets — leaving a 1-char selection.
             Caret.Offset = primCaret.Offset;
             _editor.TextArea.Selection = Selection.Create(
                 _editor.TextArea, primCaret.Offset, primCaret.Offset);
 
-            // Rebuild _carets — edit operations always collapse selections to carets.
-            // (BeforeInsertion anchor lands at X while AfterInsertion caret lands at X+len,
-            // so we'd get a 1-char residual selection; null the anchor unconditionally.)
+            // After any edit, selections collapse to plain carets — clear the user primary too.
+            _userPrimaryCS = null;
+
             _carets.Clear();
             foreach (var (caretA, selA) in all)
             {
-                if (ReferenceEquals(caretA, primCaret)) continue; // skip primary
-                _carets.Add(new CaretState
-                {
-                    Caret  = caretA,
-                    Anchor = null,
-                });
+                if (ReferenceEquals(caretA, primCaret)) continue;
+                _carets.Add(new CaretState { Caret = caretA, Anchor = null });
             }
 
             Redraw();
@@ -500,7 +549,6 @@ namespace MinimalNotepad.Formatting
 
         // ── Position calculators ──────────────────────────────────────────────────
 
-        // Movement (Ctrl+Arrow): skip word chars then skip whitespace → land at start of next word.
         int FindNext(int off, bool word)
         {
             int len = Doc.TextLength;
@@ -526,8 +574,6 @@ namespace MinimalNotepad.Formatting
             return p;
         }
 
-        // Selection (Ctrl+Shift+Arrow): stop at end/start of word, never eat whitespace.
-        // If already in whitespace, skip it first then stop at end of next word.
         int FindNextSelect(int off)
         {
             int len = Doc.TextLength;
@@ -563,7 +609,6 @@ namespace MinimalNotepad.Formatting
             return p;
         }
 
-        /// <summary>Used by NotepadWindow to extend the primary cursor's word-selection.</summary>
         public int WordBoundaryForSelect(int offset, bool forward) =>
             forward ? FindNextSelect(offset) : FindPrevSelect(offset);
 
@@ -613,26 +658,29 @@ namespace MinimalNotepad.Formatting
 
         public void Draw(TextView tv, DrawingContext dc)
         {
-            Prune();
-            if (_carets.Count == 0)
-            {
-                RestoreNativeSelection();
-                return;
-            }
+            Prune(); // also runs SyncNativeSelectionBrush() — self-heals a stale native brush
+            bool anyActive = _ctrlSelectionMode || _carets.Count > 0 || _userPrimaryCS != null;
+            if (!anyActive) return;
             tv.EnsureVisualLines();
             var brush = Caret.CaretBrush ?? Brushes.Black;
 
-            // Primary selection — drawn with our brush since native SelectionBrush is suppressed
-            var primSel = _editor.TextArea.Selection;
-            if (!primSel.IsEmpty)
+            // Primary selection highlight.
+            // During active Ctrl+drag: draw the live in-progress selection.
+            // After a drag: draw _userPrimaryCS (persists through Find navigation).
+            // Plain Alt+drag multi-caret (no _userPrimaryCS): draw AvalonEdit's selection.
+            if (_ctrlSelectionMode)
             {
-                var ss = primSel.SurroundingSegment;
-                if (ss.Length > 0)
-                {
-                    var seg = new TextSegment { StartOffset = ss.Offset, Length = ss.Length };
-                    foreach (var r in BackgroundGeometryBuilder.GetRectsForSegment(tv, seg))
-                        dc.DrawRectangle(SelBrush, null, r);
-                }
+                DrawAvalonSel(tv, dc);
+            }
+            else if (_userPrimaryCS != null && !_userPrimaryCS.Caret.IsDeleted && _userPrimaryCS.HasSelection)
+            {
+                var seg = new TextSegment { StartOffset = _userPrimaryCS.SelectionStart, Length = _userPrimaryCS.SelectionLength };
+                foreach (var r in BackgroundGeometryBuilder.GetRectsForSegment(tv, seg))
+                    dc.DrawRectangle(SelBrush, null, r);
+            }
+            else
+            {
+                DrawAvalonSel(tv, dc);
             }
 
             // Secondary carets
@@ -640,7 +688,6 @@ namespace MinimalNotepad.Formatting
             {
                 if (cs.Caret.IsDeleted) continue;
 
-                // Selection highlight
                 if (cs.HasSelection)
                 {
                     var seg = new TextSegment { StartOffset = cs.SelectionStart, Length = cs.SelectionLength };
@@ -648,13 +695,23 @@ namespace MinimalNotepad.Formatting
                         dc.DrawRectangle(SelBrush, null, r);
                 }
 
-                // Caret line
                 if (_blinkOn)
                 {
                     if (CaretRect(tv, cs.Caret.Offset) is Rect r)
                         dc.DrawRectangle(brush, null, new Rect(r.X, r.Y, 1.5, r.Height));
                 }
             }
+        }
+
+        void DrawAvalonSel(TextView tv, DrawingContext dc)
+        {
+            var primSel = _editor.TextArea.Selection;
+            if (primSel.IsEmpty) return;
+            var ss = primSel.SurroundingSegment;
+            if (ss.Length == 0) return;
+            var seg = new TextSegment { StartOffset = ss.Offset, Length = ss.Length };
+            foreach (var r in BackgroundGeometryBuilder.GetRectsForSegment(tv, seg))
+                dc.DrawRectangle(SelBrush, null, r);
         }
 
         static Rect? CaretRect(TextView tv, int off)
