@@ -15,7 +15,14 @@
       "Bash(cd D:\\\\\\\\Work\\\\\\\\OtherRepos\\\\\\\\MyNotepad)",
       "Bash(dotnet clean *)",
       "Bash(cd \"D:\\\\\\\\Work\\\\\\\\OtherRepos\\\\\\\\MyNotepad\")",
-      "Bash(dotnet run *)"
+      "Bash(dotnet run *)",
+      "Bash(cd /d C:\\\\Developer\\\\repos-utils\\\\MyNotepad)",
+      "Bash(findstr /S \"TextArea.*Mouse\\\\|PreviewMouse\\\\|MouseDown\" *.cs)",
+      "Bash(PowerShell *)",
+      "Bash(dir /s *.dll)",
+      "Bash(findstr /i \"avalon\")",
+      "Bash(Start-Process *)",
+      "PowerShell(Start-Process \"C:\\\\Developer\\\\repos-utils\\\\MyNotepad\\\\bin\\\\Debug\\\\net10.0-windows\\\\MyNotepad.exe\")"
     ]
   }
 }

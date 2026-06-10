@@ -1,11 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using ICSharpCode.AvalonEdit;
 using ICSharpCode.AvalonEdit.Rendering;
 using MinimalNotepad.Config;
@@ -15,6 +19,11 @@ namespace MinimalNotepad
 {
     class FindReplaceWindow : Window
     {
+        [DllImport("user32.dll")] static extern bool SetWindowPos(
+            IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);
+        static readonly IntPtr HWND_NOTOPMOST = new(-2);
+        const uint SWP_NOMOVE_NOSIZE = 0x0003;
+
         // ── Singleton ─────────────────────────────────────────────────────────
         static FindReplaceWindow? _instance;
         static AppSettings?       _appSettings;
@@ -512,7 +521,8 @@ namespace MinimalNotepad
             toolbar.Children.Add(wordBtn);
 
             Activated   += (_, _) => Opacity = 1.0;
-            Deactivated += (_, _) => Opacity = 0.55;
+            Deactivated += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.Input,
+                (Action)(() => { if (!IsActive) Opacity = 0.55; }));
 
             // Format-all button (far right)
             var formatBtn = new Button
@@ -937,7 +947,20 @@ namespace MinimalNotepad
 
         Popup BuildFormatPopup()
         {
-            var popup = new Popup { StaysOpen = false, AllowsTransparency = true, Placement = PlacementMode.Bottom };
+            var popup = new Popup { StaysOpen = true, AllowsTransparency = true, Placement = PlacementMode.Bottom };
+            popup.PreviewMouseDown += (_, _) => Activate();
+            popup.Opened += (_, _) =>
+            {
+                if (PresentationSource.FromVisual(popup.Child) is HwndSource src)
+                    SetWindowPos(src.Handle, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE_NOSIZE);
+            };
+            LocationChanged += (_, _) =>
+            {
+                if (!popup.IsOpen) return;
+                var h = popup.HorizontalOffset;
+                popup.HorizontalOffset = h + 1;
+                popup.HorizontalOffset = h;
+            };
 
             var card = new Border
             {
@@ -951,6 +974,8 @@ namespace MinimalNotepad
                 Effect          = new System.Windows.Media.Effects.DropShadowEffect
                     { BlurRadius = 14, ShadowDepth = 2, Opacity = 0.20, Color = Colors.Black, Direction = 270 },
             };
+            BindingOperations.SetBinding(card, UIElement.OpacityProperty,
+                new Binding("Opacity") { Source = this });
             var root = new StackPanel();
             card.Child  = root;
             popup.Child = card;
