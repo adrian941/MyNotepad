@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using ICSharpCode.AvalonEdit;
 using ICSharpCode.AvalonEdit.Editing;
 using ICSharpCode.AvalonEdit.Folding;
@@ -50,6 +51,7 @@ namespace MinimalNotepad
         private CodeBlockFontSizeTransformer  _codeFontSizeTransformer = null!;
         private CodeBlockCopyOverlay          _copyOverlay            = null!;
         private MultiCaretController          _multiCaret             = null!;
+        private bool                          _formattingGroupPending;
         private System.Windows.Controls.Canvas _overlayCanvas         = null!;
         private System.Windows.Threading.DispatcherTimer _reParseTimer = null!;
         private System.Windows.Threading.DispatcherTimer? _windowStateSaveTimer;
@@ -296,15 +298,54 @@ namespace MinimalNotepad
             // so _editor is ready; event wiring happens in WireEvents after both.
         }
 
+        /// <summary>
+        /// Opens an undo group, pushes a formatting-restore op (the "before" snapshot),
+        /// then defers closing the group so AvalonEdit's text edit lands inside it.
+        /// One Ctrl+Z then restores BOTH text AND formatting in a single undo step.
+        /// Guard: _formattingGroupPending prevents nested groups on rapid keystrokes.
+        /// </summary>
+        void TryPushFormattingUndoBeforeEdit()
+        {
+            if (_fmtManager.Spans.Count == 0) return;
+            if (_formattingGroupPending) return;
+
+            var snapshot = _fmtManager.TakeSnapshot();
+            _editor.Document.UndoStack.StartUndoGroup();
+            _editor.Document.UndoStack.Push(new FormattingRestoreOperation(
+                _fmtManager, snapshot, _editor.TextArea.TextView));
+            _formattingGroupPending = true;
+
+            _editor.Dispatcher.BeginInvoke(DispatcherPriority.Input, (Action)(() =>
+            {
+                _editor.Document.UndoStack.EndUndoGroup();
+                _formattingGroupPending = false;
+            }));
+        }
+
         void WireEvents()
         {
             _multiCaret = new MultiCaretController(_editor, ApplyStickyFormatting);
+            _multiCaret.PreEditHook = () =>
+            {
+                if (_fmtManager.Spans.Count == 0) return;
+                var snapshot = _fmtManager.TakeSnapshot();
+                _editor.Document.UndoStack.Push(new FormattingRestoreOperation(
+                    _fmtManager, snapshot, _editor.TextArea.TextView));
+            };
 
             _editor.TextChanged += OnTextChanged;
             _editor.TextArea.Caret.PositionChanged += OnCaretPositionChanged;
             _editor.PreviewMouseWheel += OnPreviewMouseWheel;
             _editor.PreviewKeyDown    += OnPreviewKeyDown;
             _editor.TextArea.TextEntered += OnTextEntered;
+
+            // When typing over a selection (single-cursor), the selection is deleted.
+            // Wrap with a formatting undo group so Ctrl+Z restores spans too.
+            _editor.TextArea.PreviewTextInput += (_, _) =>
+            {
+                if (!_editor.TextArea.Selection.IsEmpty && !_multiCaret.Active)
+                    TryPushFormattingUndoBeforeEdit();
+            };
             Closed += OnWindowClosed;
 
             _editor.TextArea.TextView.ScrollOffsetChanged += (_, _) => _copyOverlay.UpdatePositions();
@@ -449,7 +490,12 @@ namespace MinimalNotepad
                         bool isFmt = e.Key is Key.B or Key.I or Key.U or Key.F5
                                   || (e.Key >= Key.D0 && e.Key <= Key.D9)
                                   || (e.Key >= Key.NumPad0 && e.Key <= Key.NumPad9);
-                        if (!isFmt) _multiCaret.Clear(); // Ctrl+Z, Ctrl+V, etc. → collapse
+                        // Pass-through: undo/redo, find/replace, save, help — don't affect carets.
+                        bool isPassThrough = e.Key is Key.Z or Key.Y
+                                          or Key.F or Key.R or Key.H
+                                          or Key.S or Key.N or Key.O
+                                          or Key.M or Key.L or Key.G;
+                        if (!isFmt && !isPassThrough) _multiCaret.Clear();
                         // fall through to HandleCtrlShortcut in all cases
                     }
                 }
@@ -470,6 +516,14 @@ namespace MinimalNotepad
                 ClipboardHistoryWindow.ShowOrActivateClipboard(this);
                 e.Handled = true;
                 return;
+            }
+
+            // Wrap Delete / Backspace with a formatting undo group so Ctrl+Z also restores spans.
+            // Only for single-cursor; multi-caret EditAll uses its own PreEditHook.
+            if (!ctrl && !alt && !_multiCaret.Active &&
+                (e.Key == Key.Delete || e.Key == Key.Back))
+            {
+                TryPushFormattingUndoBeforeEdit();
             }
 
             if (ctrl && !alt)
@@ -572,7 +626,7 @@ namespace MinimalNotepad
                 return; // no selection → let AvalonEdit copy line as usual
             }
 
-            // Cut: copy rich, then remove text (AvalonEdit handles undo for text)
+            // Cut: copy rich, then remove text (grouped with formatting restore for proper undo)
             if (e.Key == Key.X)
             {
                 if (_editor.SelectionLength > 0)
@@ -580,7 +634,12 @@ namespace MinimalNotepad
                     var spans    = SpansForCopy(_editor.SelectionStart, _editor.SelectionLength);
                     var richJson = RichClipboard.Copy(_editor.SelectedText, spans, _editor.SelectionStart);
                     ClipboardHistory.Push(_editor.SelectedText, richJson);
+                    var fmtSnap = _fmtManager.TakeSnapshot();
+                    _editor.Document.UndoStack.StartUndoGroup();
+                    _editor.Document.UndoStack.Push(new FormattingRestoreOperation(
+                        _fmtManager, fmtSnap, _editor.TextArea.TextView));
                     _editor.Document.Remove(_editor.SelectionStart, _editor.SelectionLength);
+                    _editor.Document.UndoStack.EndUndoGroup();
                     e.Handled = true;
                 }
                 return;
@@ -1499,7 +1558,10 @@ namespace MinimalNotepad
 
             if (cut)
             {
+                var fmtSnap = _fmtManager.TakeSnapshot();
                 _editor.Document.BeginUpdate();
+                _editor.Document.UndoStack.Push(new FormattingRestoreOperation(
+                    _fmtManager, fmtSnap, _editor.TextArea.TextView));
                 foreach (var (start, len) in selections.OrderByDescending(s => s.Start))
                     _editor.Document.Remove(start, len);
                 _editor.Document.EndUpdate();

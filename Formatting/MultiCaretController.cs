@@ -87,7 +87,11 @@ namespace MinimalNotepad.Formatting
             get { Prune(); return _carets.Count > 0; }
         }
 
-        void Prune() => _carets.RemoveAll(c => c.Caret.IsDeleted);
+        void Prune()
+        {
+            _carets.RemoveAll(c => c.Caret.IsDeleted);
+            if (_carets.Count == 0) RestoreNativeSelection();
+        }
 
         /// <summary>
         /// Returns all non-empty selections (primary + secondaries) sorted by start offset.
@@ -212,6 +216,13 @@ namespace MinimalNotepad.Formatting
             _carets.Add(new CaretState { Caret = CaretAnchor(offset) });
         }
 
+        /// <summary>
+        /// Called by NotepadWindow immediately after Doc.BeginUpdate() in EditAll,
+        /// so it runs inside the undo group — allows NotepadWindow to push a
+        /// FormattingRestoreOperation paired with the multi-caret text edits.
+        /// </summary>
+        public Action? PreEditHook { get; set; }
+
         // ── Public API ────────────────────────────────────────────────────────────
         public void Clear()
         {
@@ -309,6 +320,7 @@ namespace MinimalNotepad.Formatting
                     Navigate(shift, cs => EndOf(cs.Caret.Offset));
                     return false;
 
+                case Key.Tab:    RunInsert("\t"); return true;
                 case Key.Enter:  RunInsert("\n"); return true;
                 case Key.Back:   RunBackspace();  return true;
                 case Key.Delete: RunDelete();     return true;
@@ -401,6 +413,7 @@ namespace MinimalNotepad.Formatting
                 .ToList();
 
             Doc.BeginUpdate();
+            PreEditHook?.Invoke(); // NotepadWindow pushes FormattingRestoreOperation here
             try
             {
                 foreach (var (caretA, selA) in all)
@@ -417,22 +430,25 @@ namespace MinimalNotepad.Formatting
             }
             finally { Doc.EndUpdate(); }
 
-            // Update primary caret and clear its selection
+            // Position primary caret and force-collapse its selection.
+            // Using Selection.Create instead of ClearSelection() because AvalonEdit tracks
+            // its own selection anchors (BeforeInsertion/AfterInsertion) that survive the
+            // delete+insert cycle and land at different offsets — leaving a 1-char selection.
             Caret.Offset = primCaret.Offset;
-            _editor.TextArea.ClearSelection();
+            _editor.TextArea.Selection = Selection.Create(
+                _editor.TextArea, primCaret.Offset, primCaret.Offset);
 
-            // Rebuild _carets from the now-updated snapshot anchors
-            // (they tracked all the edits automatically)
+            // Rebuild _carets — edit operations always collapse selections to carets.
+            // (BeforeInsertion anchor lands at X while AfterInsertion caret lands at X+len,
+            // so we'd get a 1-char residual selection; null the anchor unconditionally.)
             _carets.Clear();
             foreach (var (caretA, selA) in all)
             {
                 if (ReferenceEquals(caretA, primCaret)) continue; // skip primary
-
-                bool stillHasSel = selA != null && !selA.IsDeleted && selA.Offset != caretA.Offset;
                 _carets.Add(new CaretState
                 {
                     Caret  = caretA,
-                    Anchor = stillHasSel ? selA : null,
+                    Anchor = null,
                 });
             }
 
