@@ -648,10 +648,18 @@ namespace MinimalNotepad
             // Paste: check for code block format first, then rich spans, then plain text
             if (e.Key == Key.V)
             {
+                bool shiftDown = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+
                 // Try custom code block format (from Copy button or Ctrl+C within code block)
                 string? codeBlockContent = TryGetCodeBlockFormatFromClipboard();
                 if (codeBlockContent != null)
                 {
+                    // Ctrl+Shift+V → always strip decorators; Ctrl+V inside a code block → also strip
+                    if (shiftDown || GetCodeBlockAtCaret() != null)
+                    {
+                        var lines = codeBlockContent.Split('\n');
+                        codeBlockContent = string.Join("\n", lines, 1, Math.Max(0, lines.Length - 2));
+                    }
                     PasteContent(codeBlockContent, null);
                     e.Handled = true;
                     return;
@@ -1116,6 +1124,11 @@ namespace MinimalNotepad
         void ShowRenameDialog()
         {
             var oldName = _savedFileName!;
+            // For files in subfolders (_externalPath set), rename in their actual directory.
+            string oldFilePath = _externalPath ?? SavedFileStore.GetFilePath(oldName);
+            string fileDir     = System.IO.Path.GetDirectoryName(oldFilePath)!;
+            bool   isExternal  = _externalPath != null;
+
             var dialog = new Window
             {
                 Title                 = "Rename File:",
@@ -1149,20 +1162,24 @@ namespace MinimalNotepad
                 if (string.IsNullOrWhiteSpace(newName)) return;
                 if (newName == oldName) { dialog.Close(); return; }
 
-                if (SavedFileStore.FileExists(newName))
+                string newFilePath = System.IO.Path.Combine(fileDir, newName + ".mnp");
+
+                bool alreadyExists = isExternal
+                    ? System.IO.File.Exists(newFilePath)
+                    : SavedFileStore.FileExists(newName);
+                if (alreadyExists)
                 {
-                    errorLabel.Text       = $"\"{newName}\" already exists in the Saved folder.";
+                    errorLabel.Text       = $"\"{newName}\" already exists in this folder.";
                     errorLabel.Visibility = Visibility.Visible;
                     return;
                 }
 
                 try
                 {
-                    var oldPath = SavedFileStore.GetFilePath(oldName);
-                    var newPath = SavedFileStore.GetFilePath(newName);
-                    System.IO.File.Move(oldPath, newPath);
+                    System.IO.File.Move(oldFilePath, newFilePath);
                     _savedFileName = newName;
                     _prefixTitle   = newName;
+                    if (isExternal) _externalPath = newFilePath;
                     _isDirty       = false;
                     UpdateTitle();
                     dialog.Close();

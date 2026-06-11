@@ -38,11 +38,27 @@ internal class ClipboardHistoryWindow : Window
 
     // ── Keyboard navigation + undo ────────────────────────────────────────
     private int _selectedIndex = -1;
-    private readonly Stack<(HistoryMode Mode, int Index, object Entry)> _undoStack = new();
-    private readonly List<(Border Card, Brush NormalBg, Action OnActivate, Action OnDelete, object Entry)> _cardList = new();
+    private readonly Stack<(HistoryMode Mode, int Index, object Entry, string? FullPath)> _undoStack = new();
+    private readonly List<(Border Card, Brush NormalBg, Action OnActivate, Action OnDelete, object Entry, string? FullPath)> _cardList = new();
 
     private static readonly Brush _selCardBorder  = new SolidColorBrush(Color.FromRgb(0x55, 0x88, 0xCC));
     private static readonly Brush _normCardBorder = new SolidColorBrush(Color.FromRgb(0xE0, 0xE0, 0xE0));
+
+    // ── Chip keyboard focus (Files mode) ──────────────────────────────────
+    private int _chipFocusIndex = -1;
+    private static readonly Brush _chipFocusBorderBrush = new SolidColorBrush(Color.FromRgb(0x44, 0x72, 0xC4));
+
+    // ── Chip drag-and-drop ────────────────────────────────────────────────
+    private int   _dragSrcChipIdx  = -1;
+    private int   _dragTargetIdx   = -1;
+    private bool  _isDraggingChip  = false;
+    private Point _dragOriginPt;
+    private readonly List<(Border El, int ChipsIdx)> _chipElsForDrag = new();
+    private readonly List<(int ChipsIdx, double CenterX)> _chipCenterXs = new();
+
+    // ── Delete toast (undo snackbar) ──────────────────────────────────────
+    private Border _toastBar = null!;
+    private System.Windows.Threading.DispatcherTimer? _toastTimer;
 
     // ── Win32 P/Invoke ────────────────────────────────────────────────────
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
@@ -166,6 +182,7 @@ internal class ClipboardHistoryWindow : Window
 
     private void CycleTab(int direction)
     {
+        _chipFocusIndex = -1;
         var modes = new System.Collections.Generic.List<HistoryMode> { HistoryMode.App };
         if (GlobalClipboardMonitor.IsEnabled) modes.Add(HistoryMode.Global);
         modes.Add(HistoryMode.Files);
@@ -275,6 +292,21 @@ internal class ClipboardHistoryWindow : Window
 
         _cardsPanel = new StackPanel();
         scroll.Content = _cardsPanel;
+        scroll.MouseRightButtonUp += (_, e) =>
+        {
+            if (_mode != HistoryMode.Files || e.Handled) return;
+            e.Handled = true;
+            string? active = FolderChipsStore.Active;
+            string folder  = active != null ? FolderChipsStore.FullPath(active) : SavedFileStore.SavedFolder;
+            var menu = new ContextMenu { FontSize = 12 };
+            var ni   = new MenuItem { Header = "    New .mnp file here" };
+            ni.Click += (_, _) => ShowNewFileDialog(folder);
+            menu.Items.Add(ni);
+            menu.Items.Add(BuildSortSubmenu(active));
+            menu.PlacementTarget = scroll;
+            menu.Placement       = PlacementMode.MousePoint;
+            menu.IsOpen          = true;
+        };
 
         // ── Footer: open folder · clear all · [App][System][Files] · ☰ ────
         var openFolderLink = MakeFooterLink("📂  Open history folder");
@@ -444,7 +476,13 @@ internal class ClipboardHistoryWindow : Window
         outerDock.Children.Add(footerRow);
         outerDock.Children.Add(chipsHost);
         outerDock.Children.Add(scroll);
-        Content = outerDock;
+
+        // ── Toast overlay (delete undo snackbar) ──────────────────────────
+        _toastBar = BuildToastBar();
+        var contentGrid = new Grid();
+        contentGrid.Children.Add(outerDock);
+        contentGrid.Children.Add(_toastBar);
+        Content = contentGrid;
 
         RefreshChips();
         RefreshCards();
@@ -530,6 +568,8 @@ internal class ClipboardHistoryWindow : Window
     private Border BuildChipsHost()
     {
         _chipsPanel = new WrapPanel { Orientation = Orientation.Horizontal };
+        _chipsPanel.PreviewMouseMove           += OnChipsPanelMouseMove;
+        _chipsPanel.PreviewMouseLeftButtonUp   += OnChipsPanelMouseUp;
         _chipsHost = new Border
         {
             Background       = new SolidColorBrush(Color.FromRgb(0xFA, 0xFA, 0xFB)),
@@ -547,9 +587,488 @@ internal class ClipboardHistoryWindow : Window
         if (_chipsPanel == null) return;
         _chipsPanel.Children.Clear();
         _chipsPanel.Children.Add(BuildMainChip());
+        int idx = 0;
         foreach (var rel in FolderChipsStore.Chips)
-            _chipsPanel.Children.Add(BuildChip(rel));
+        {
+            int capturedIdx = idx++;
+            string capturedRel = rel;
+            var chip = BuildChip(rel);
+            chip.PreviewMouseLeftButtonDown += (_, e) =>
+            {
+                _dragSrcChipIdx = capturedIdx;
+                _dragOriginPt   = e.GetPosition(_chipsPanel);
+                _isDraggingChip = false;
+            };
+            chip.MouseRightButtonUp += (_, e) =>
+            {
+                e.Handled = true;
+                ShowChipContextMenu(chip, capturedRel);
+            };
+            _chipsPanel.Children.Add(chip);
+        }
         _chipsPanel.Children.Add(BuildAddChip());
+        ReapplyChipFocusVisual();
+    }
+
+    private void ReapplyChipFocusVisual()
+    {
+        if (_chipFocusIndex < 0 || _chipFocusIndex >= _chipsPanel.Children.Count) return;
+        if (_chipsPanel.Children[_chipFocusIndex] is Border chip)
+        {
+            chip.BorderBrush     = _chipFocusBorderBrush;
+            chip.BorderThickness = new Thickness(2);
+        }
+    }
+
+    // ── Chip drag-and-drop ────────────────────────────────────────────────
+
+    private void OnChipsPanelMouseMove(object sender, MouseEventArgs e)
+    {
+        if (_dragSrcChipIdx < 0) return;
+        var pos = e.GetPosition(_chipsPanel);
+        if (!_isDraggingChip)
+        {
+            if (Math.Abs(pos.X - _dragOriginPt.X) > 5 || Math.Abs(pos.Y - _dragOriginPt.Y) > 5)
+            {
+                _isDraggingChip = true;
+                CaptureDragHitTestPositions();
+                Mouse.Capture(_chipsPanel);
+            }
+            else return;
+        }
+        int newTarget = FindChipDropTarget(pos);
+        if (newTarget != _dragTargetIdx)
+        {
+            _dragTargetIdx = newTarget;
+            RebuildChipsForDrag();
+        }
+    }
+
+    private void OnChipsPanelMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_dragSrcChipIdx < 0) return;
+        bool wasDragging = _isDraggingChip;
+        int src = _dragSrcChipIdx;
+        int tgt = _dragTargetIdx;
+
+        _dragSrcChipIdx = -1;
+        _dragTargetIdx  = -1;
+        _isDraggingChip = false;
+        _chipElsForDrag.Clear();
+        _chipCenterXs.Clear();
+
+        if (Mouse.Captured == _chipsPanel)
+            Mouse.Capture(null);
+
+        if (wasDragging)
+        {
+            e.Handled = true;
+            if (src >= 0 && tgt >= 0 && tgt != src && tgt != src + 1)
+                FolderChipsStore.MoveChip(src, tgt);
+        }
+        RefreshChips();
+    }
+
+    private void CaptureDragHitTestPositions()
+    {
+        _chipCenterXs.Clear();
+        var chips = FolderChipsStore.Chips;
+        // WrapPanel children: [Main=0][chip0=1][chip1=2]...[chipN=N][+]
+        for (int i = 0; i < chips.Count; i++)
+        {
+            if (i + 1 >= _chipsPanel.Children.Count) break;
+            if (_chipsPanel.Children[i + 1] is FrameworkElement el)
+            {
+                var center = el.TranslatePoint(new Point(el.ActualWidth / 2, 0), _chipsPanel);
+                _chipCenterXs.Add((i, center.X));
+            }
+        }
+    }
+
+    private int FindChipDropTarget(Point pos)
+    {
+        for (int i = 0; i < _chipCenterXs.Count; i++)
+        {
+            if (pos.X < _chipCenterXs[i].CenterX) return _chipCenterXs[i].ChipsIdx;
+        }
+        return _chipCenterXs.Count > 0 ? _chipCenterXs[^1].ChipsIdx + 1 : 0;
+    }
+
+    private void RebuildChipsForDrag()
+    {
+        _chipElsForDrag.Clear();
+        _chipsPanel.Children.Clear();
+        _chipsPanel.Children.Add(BuildMainChip());
+        var chips = FolderChipsStore.Chips;
+        for (int i = 0; i <= chips.Count; i++)
+        {
+            if (i == _dragTargetIdx && i != _dragSrcChipIdx && i != _dragSrcChipIdx + 1)
+                _chipsPanel.Children.Add(new Border
+                {
+                    Width             = 2,
+                    Background        = new SolidColorBrush(Color.FromRgb(0x44, 0x72, 0xC4)),
+                    CornerRadius      = new CornerRadius(1),
+                    Margin            = new Thickness(0, 2, 4, 5),
+                    MinHeight         = 16,
+                    VerticalAlignment = VerticalAlignment.Stretch,
+                    IsHitTestVisible  = false
+                });
+            if (i < chips.Count)
+            {
+                var chip = BuildChip(chips[i]);
+                if (i == _dragSrcChipIdx) chip.Opacity = 0.4;
+                _chipElsForDrag.Add((chip, i));
+                _chipsPanel.Children.Add(chip);
+            }
+        }
+        _chipsPanel.Children.Add(BuildAddChip());
+        ReapplyChipFocusVisual();
+    }
+
+    // ── Chip right-click context menu ─────────────────────────────────────
+
+    private void ShowChipContextMenu(Border chip, string rel)
+    {
+        var menu = new ContextMenu { FontSize = 12 };
+
+        var newFileItem = new MenuItem { Header = "    New .mnp file here" };
+        newFileItem.Click += (_, _) => ShowNewFileDialog(FolderChipsStore.FullPath(rel));
+        menu.Items.Add(newFileItem);
+        menu.Items.Add(BuildSortSubmenu(rel));
+
+        menu.Items.Add(new Separator());
+
+        var renameItem = new MenuItem { Header = "    Rename folder…" };
+        renameItem.Click += (_, _) => ShowChipRenameDialog(rel);
+        menu.Items.Add(renameItem);
+
+        var explorerItem = new MenuItem { Header = "    Open in Explorer" };
+        explorerItem.Click += (_, _) =>
+        {
+            string fullPath = FolderChipsStore.FullPath(rel);
+            if (Directory.Exists(fullPath))
+                System.Diagnostics.Process.Start("explorer.exe", fullPath);
+        };
+        menu.Items.Add(explorerItem);
+
+        menu.PlacementTarget = chip;
+        menu.Placement       = PlacementMode.Bottom;
+        menu.IsOpen          = true;
+    }
+
+    private void ShowChipRenameDialog(string rel)
+    {
+        string lastName  = rel.Contains('/') ? rel[(rel.LastIndexOf('/') + 1)..] : rel;
+        string parentRel = rel.Contains('/') ? rel[..rel.LastIndexOf('/')] : "";
+        var    badChars  = System.IO.Path.GetInvalidFileNameChars();
+
+        _suppressDeactivationHwndCapture = true;
+        try
+        {
+            var dlg = new Window
+            {
+                Title                 = "Rename Folder",
+                Width                 = 320,
+                SizeToContent         = SizeToContent.Height,
+                Owner                 = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                ResizeMode            = ResizeMode.NoResize,
+                ShowInTaskbar         = false,
+                Background            = new SolidColorBrush(Color.FromRgb(0xF6, 0xF6, 0xF7))
+            };
+
+            var nameBox = new TextBox
+            {
+                Text                     = lastName,
+                Height                   = 26,
+                FontSize                 = 12,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                SelectionStart           = 0,
+                SelectionLength          = lastName.Length
+            };
+            var errorTb = MakeErrorLabel();
+            var renameBtn = new Button
+            {
+                Content   = "Rename",
+                Width     = 80,
+                Height    = 26,
+                IsDefault = true,
+                Cursor    = Cursors.Hand,
+                Margin    = new Thickness(8, 0, 0, 0)
+            };
+            var cancelBtn = new Button
+            {
+                Content    = "Cancel",
+                Width      = 70,
+                Height     = 26,
+                IsCancel   = true,
+                Cursor     = Cursors.Hand
+            };
+            var btnRow = new StackPanel
+            {
+                Orientation         = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin              = new Thickness(0, 8, 0, 0)
+            };
+            btnRow.Children.Add(cancelBtn);
+            btnRow.Children.Add(renameBtn);
+
+            var stack = new StackPanel { Margin = new Thickness(16) };
+            stack.Children.Add(new TextBlock
+            {
+                Text       = $"New name for \"{lastName}\":",
+                FontSize   = 11,
+                Margin     = new Thickness(0, 0, 0, 5),
+                Foreground = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x44))
+            });
+            stack.Children.Add(nameBox);
+            stack.Children.Add(errorTb);
+            stack.Children.Add(btnRow);
+            dlg.Content = stack;
+
+            nameBox.PreviewTextInput += (_, e) =>
+            {
+                if (e.Text.IndexOfAny(badChars) >= 0) e.Handled = true;
+            };
+
+            void TryRename()
+            {
+                string newName = nameBox.Text.Trim();
+                if (newName.Length == 0) { errorTb.Text = "Name cannot be empty."; errorTb.Visibility = Visibility.Visible; return; }
+                if (newName.IndexOfAny(badChars) >= 0) { errorTb.Text = "Name contains invalid characters."; errorTb.Visibility = Visibility.Visible; return; }
+                string newRel = parentRel.Length == 0 ? newName : parentRel + "/" + newName;
+                var (ok, err) = FolderChipsStore.RenameFolder(rel, newRel);
+                if (!ok) { errorTb.Text = err; errorTb.Visibility = Visibility.Visible; return; }
+                dlg.DialogResult = true;
+            }
+
+            renameBtn.Click += (_, _) => TryRename();
+            dlg.ShowDialog();
+        }
+        finally { _suppressDeactivationHwndCapture = false; }
+
+        RefreshChips();
+        RefreshCards();
+        Activate();
+    }
+
+    // ── Sort helpers ─────────────────────────────────────────────────────
+
+    [System.Runtime.InteropServices.DllImport("shlwapi.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int StrCmpLogicalW(string x, string y);
+
+    private sealed class WindowsExplorerComparer : IComparer<string>
+    {
+        public static readonly WindowsExplorerComparer Instance = new();
+        public int Compare(string? x, string? y) => StrCmpLogicalW(x ?? "", y ?? "");
+    }
+
+    private static List<T> ApplySort<T>(
+        List<T> source, ChipSortOrder sort,
+        Func<T, DateTime> getDate, Func<T, string> getName)
+    {
+        switch (sort)
+        {
+            case ChipSortOrder.DateAsc:  return source.OrderBy(getDate).ToList();
+            case ChipSortOrder.NameAsc:  return source.OrderBy(getName, WindowsExplorerComparer.Instance).ToList();
+            case ChipSortOrder.NameDesc: return source.OrderByDescending(getName, WindowsExplorerComparer.Instance).ToList();
+            default:                     return source.OrderByDescending(getDate).ToList();
+        }
+    }
+
+    private MenuItem BuildSortSubmenu(string? chipRel)
+    {
+        var current = FolderChipsStore.GetSort(chipRel);
+        var top     = new MenuItem { Header = "    Sort by" };
+
+        void Add(ChipSortOrder order, string label)
+        {
+            bool sel = order == current;
+            var mi   = new MenuItem { Header = (sel ? "✓  " : "    ") + label };
+            mi.Click += (_, _) => { FolderChipsStore.SetSort(chipRel, order); RefreshCards(); };
+            top.Items.Add(mi);
+        }
+
+        Add(ChipSortOrder.DateDesc, "Date: newest first");
+        Add(ChipSortOrder.DateAsc,  "Date: oldest first");
+        Add(ChipSortOrder.NameAsc,  "Name: A to Z");
+        Add(ChipSortOrder.NameDesc, "Name: Z to A");
+
+        return top;
+    }
+
+    // ── Shared error label factory ────────────────────────────────────────
+
+    private static TextBlock MakeErrorLabel()
+    {
+        var tb = new TextBlock
+        {
+            FontSize     = 10,
+            Foreground   = new SolidColorBrush(Color.FromRgb(0xCC, 0x30, 0x30)),
+            TextWrapping = TextWrapping.Wrap,
+            Cursor       = Cursors.Hand,
+            Margin       = new Thickness(0, 3, 0, 0),
+            Visibility   = Visibility.Collapsed,
+            ToolTip      = "Click to see full message"
+        };
+        tb.MouseLeftButtonUp += (_, _) =>
+        {
+            if (!string.IsNullOrEmpty(tb.Text))
+                MessageBox.Show(tb.Text, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        };
+        return tb;
+    }
+
+    // ── New .mnp file ─────────────────────────────────────────────────────
+
+    private void ShowNewFileDialog(string folderFullPath)
+    {
+        var badChars = System.IO.Path.GetInvalidFileNameChars();
+
+        _suppressDeactivationHwndCapture = true;
+        try
+        {
+            var dlg = new Window
+            {
+                Title                 = "New File",
+                Width                 = 320,
+                SizeToContent         = SizeToContent.Height,
+                Owner                 = this,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                ResizeMode            = ResizeMode.NoResize,
+                ShowInTaskbar         = false,
+                Background            = new SolidColorBrush(Color.FromRgb(0xF6, 0xF6, 0xF7))
+            };
+
+            var nameBox = new TextBox
+            {
+                Height                   = 26,
+                FontSize                 = 12,
+                VerticalContentAlignment = VerticalAlignment.Center
+            };
+            var errorTb = MakeErrorLabel();
+            var createBtn = new Button
+            {
+                Content   = "Create",
+                Width     = 70,
+                Height    = 26,
+                IsDefault = true,
+                Cursor    = Cursors.Hand,
+                Margin    = new Thickness(8, 0, 0, 0)
+            };
+            var cancelBtn = new Button
+            {
+                Content  = "Cancel",
+                Width    = 70,
+                Height   = 26,
+                IsCancel = true,
+                Cursor   = Cursors.Hand
+            };
+            var btnRow = new StackPanel
+            {
+                Orientation         = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin              = new Thickness(0, 8, 0, 0)
+            };
+            btnRow.Children.Add(cancelBtn);
+            btnRow.Children.Add(createBtn);
+
+            var stack = new StackPanel { Margin = new Thickness(16) };
+            stack.Children.Add(new TextBlock
+            {
+                Text       = "File name (without .mnp):",
+                FontSize   = 11,
+                Margin     = new Thickness(0, 0, 0, 5),
+                Foreground = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x44))
+            });
+            stack.Children.Add(nameBox);
+            stack.Children.Add(errorTb);
+            stack.Children.Add(btnRow);
+            dlg.Content = stack;
+
+            nameBox.PreviewTextInput += (_, e) =>
+            {
+                if (e.Text.IndexOfAny(badChars) >= 0) e.Handled = true;
+            };
+
+            void TryCreate()
+            {
+                string raw  = nameBox.Text.Trim();
+                // Strip trailing .mnp if the user typed it
+                if (raw.EndsWith(".mnp", StringComparison.OrdinalIgnoreCase))
+                    raw = raw[..^4].TrimEnd();
+                if (raw.Length == 0)
+                {
+                    errorTb.Text = "Name cannot be empty.";
+                    errorTb.Visibility = Visibility.Visible;
+                    return;
+                }
+                if (raw.IndexOfAny(badChars) >= 0)
+                {
+                    errorTb.Text = "Name contains invalid characters.";
+                    errorTb.Visibility = Visibility.Visible;
+                    return;
+                }
+                string targetPath = System.IO.Path.Combine(folderFullPath, raw + ".mnp");
+                if (System.IO.File.Exists(targetPath))
+                {
+                    errorTb.Text = $"\"{raw}.mnp\" already exists.";
+                    errorTb.Visibility = Visibility.Visible;
+                    return;
+                }
+                try
+                {
+                    SavedFileStore.SaveToPath(targetPath, "", null);
+                    dlg.DialogResult = true;
+                }
+                catch (Exception ex)
+                {
+                    errorTb.Text = ex.Message;
+                    errorTb.Visibility = Visibility.Visible;
+                }
+            }
+
+            createBtn.Click += (_, _) => TryCreate();
+            nameBox.Focus();
+            dlg.ShowDialog();
+        }
+        finally { _suppressDeactivationHwndCapture = false; }
+        Activate();
+    }
+
+    private void NavigateToChip(int index)
+    {
+        int count = _chipsPanel.Children.Count;
+        if (count == 0) { _chipFocusIndex = -1; return; }
+        _chipFocusIndex = ((index % count) + count) % count;
+
+        int plusIndex = count - 1;
+        if (_chipFocusIndex < plusIndex)
+        {
+            bool changed = false;
+            if (_chipFocusIndex == 0)
+            {
+                if (FolderChipsStore.Active != null) { FolderChipsStore.Active = null; changed = true; }
+            }
+            else
+            {
+                int relIdx = _chipFocusIndex - 1;
+                var chips  = FolderChipsStore.Chips;
+                if (relIdx < chips.Count)
+                {
+                    string rel = chips[relIdx];
+                    if (!string.Equals(FolderChipsStore.Active, rel, StringComparison.OrdinalIgnoreCase))
+                    { FolderChipsStore.Active = rel; changed = true; }
+                }
+            }
+            if (changed)
+            {
+                RefreshChips();   // ends with ReapplyChipFocusVisual
+                RefreshCards();
+                return;
+            }
+        }
+        ReapplyChipFocusVisual();
     }
 
     private Border BuildMainChip()
@@ -584,6 +1103,18 @@ internal class ClipboardHistoryWindow : Window
             FolderChipsStore.Active = null;
             RefreshChips();
             RefreshCards();
+        };
+        chip.MouseRightButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            var menu = new ContextMenu { FontSize = 12 };
+            var ni   = new MenuItem { Header = "    New .mnp file here" };
+            ni.Click += (_, _) => ShowNewFileDialog(SavedFileStore.SavedFolder);
+            menu.Items.Add(ni);
+            menu.Items.Add(BuildSortSubmenu(null));
+            menu.PlacementTarget = chip;
+            menu.Placement       = PlacementMode.Bottom;
+            menu.IsOpen          = true;
         };
         return chip;
     }
@@ -708,28 +1239,32 @@ internal class ClipboardHistoryWindow : Window
             if (!string.IsNullOrEmpty(active) && FolderChipsStore.FolderExists(active))
             {
                 // Filtered view: .mnp files inside the active subfolder, opened as external files.
-                var folderFiles = FolderChipsStore.LoadFolder(active);
+                var folderFiles = ApplySort(FolderChipsStore.LoadFolder(active),
+                    FolderChipsStore.GetSort(active),
+                    t => t.Entry.LastModified, t => t.Entry.FileName);
                 if (folderFiles.Count == 0)
                 {
-                    ShowEmptyMessage($"No .mnp files in “{active}”."); _selectedIndex = -1; return;
+                    ShowEmptyMessage($"No .mnp files in \"{active}\"."); _selectedIndex = -1; return;
                 }
                 foreach (var (f, fullPath) in folderFiles)
                 {
                     var (card, normalBg, onActivate, onDelete) = BuildSavedFileCard(f, fullPath);
                     _cardsPanel.Children.Add(card);
-                    _cardList.Add((card, normalBg, onActivate, onDelete, f));
+                    _cardList.Add((card, normalBg, onActivate, onDelete, f, fullPath));
                 }
             }
             else
             {
                 // Base view: top-level Saved library files.
-                var files = SavedFileStore.LoadAll();
+                var files = ApplySort(SavedFileStore.LoadAll(),
+                    FolderChipsStore.GetSort(null),
+                    e => e.LastModified, e => e.FileName);
                 if (files.Count == 0) { ShowEmptyMessage("No saved files yet."); _selectedIndex = -1; return; }
                 foreach (var f in files)
                 {
                     var (card, normalBg, onActivate, onDelete) = BuildSavedFileCard(f);
                     _cardsPanel.Children.Add(card);
-                    _cardList.Add((card, normalBg, onActivate, onDelete, f));
+                    _cardList.Add((card, normalBg, onActivate, onDelete, f, null));
                 }
             }
         }
@@ -741,7 +1276,7 @@ internal class ClipboardHistoryWindow : Window
             {
                 var (card, normalBg, onActivate, onDelete) = BuildCard(entry);
                 _cardsPanel.Children.Add(card);
-                _cardList.Add((card, normalBg, onActivate, onDelete, entry));
+                _cardList.Add((card, normalBg, onActivate, onDelete, entry, null));
             }
         }
         else
@@ -752,7 +1287,7 @@ internal class ClipboardHistoryWindow : Window
             {
                 var (card, normalBg, onActivate, onDelete) = BuildCard(e);
                 _cardsPanel.Children.Add(card);
-                _cardList.Add((card, normalBg, onActivate, onDelete, e));
+                _cardList.Add((card, normalBg, onActivate, onDelete, e, null));
             }
         }
 
@@ -1107,15 +1642,17 @@ internal class ClipboardHistoryWindow : Window
     {
         if (index < 0 || index >= _cardList.Count) return;
         var info = _cardList[index];
-        _undoStack.Push((_mode, index, info.Entry));
+        _undoStack.Push((_mode, index, info.Entry, info.FullPath));
         info.OnDelete();
+        ShowToast("Deleted — Undo?");
         // RefreshCards fires via HistoryChanged; _selectedIndex clamped there
     }
 
     private void UndoDelete()
     {
+        HideToast();
         if (_undoStack.Count == 0) return;
-        var (mode, index, entry) = _undoStack.Pop();
+        var (mode, index, entry, fullPath) = _undoStack.Pop();
 
         if (entry is ClipboardEntry clipEntry)
         {
@@ -1126,8 +1663,78 @@ internal class ClipboardHistoryWindow : Window
         else if (entry is SavedFileEntry fileEntry)
         {
             _selectedIndex = 0;
-            SavedFileStore.Restore(fileEntry);
+            if (!string.IsNullOrEmpty(fullPath))
+                SavedFileStore.RestoreToPath(fileEntry, fullPath);
+            else
+                SavedFileStore.Restore(fileEntry);
         }
+    }
+
+    // ── Delete toast (undo snackbar) ──────────────────────────────────────
+
+    private Border BuildToastBar()
+    {
+        var undoBtn = new TextBlock
+        {
+            Text              = "Undo",
+            FontSize          = 11,
+            FontWeight        = FontWeights.SemiBold,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0x88, 0xCC, 0xFF)),
+            Cursor            = Cursors.Hand,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin            = new Thickness(14, 0, 0, 0)
+        };
+        undoBtn.MouseEnter += (_, _) =>
+            undoBtn.Foreground = new SolidColorBrush(Colors.White);
+        undoBtn.MouseLeave += (_, _) =>
+            undoBtn.Foreground = new SolidColorBrush(Color.FromRgb(0x88, 0xCC, 0xFF));
+        undoBtn.MouseLeftButtonUp += (_, _) => UndoDelete();
+
+        var msgText = new TextBlock
+        {
+            FontSize          = 11,
+            Foreground        = new SolidColorBrush(Color.FromRgb(0xDD, 0xDD, 0xDD)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Text              = "Deleted — Undo?"
+        };
+
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(msgText);
+        row.Children.Add(undoBtn);
+
+        var bar = new Border
+        {
+            Background          = new SolidColorBrush(Color.FromRgb(0x28, 0x28, 0x28)),
+            CornerRadius        = new CornerRadius(5),
+            Padding             = new Thickness(14, 8, 14, 8),
+            Margin              = new Thickness(14, 0, 14, 46),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment   = VerticalAlignment.Bottom,
+            Visibility          = Visibility.Collapsed,
+            Child               = row,
+            IsHitTestVisible    = true
+        };
+
+        // store ref to msgText so ShowToast can update the message
+        bar.Tag = msgText;
+        return bar;
+    }
+
+    private void ShowToast(string message)
+    {
+        if (_toastBar.Tag is TextBlock tb) tb.Text = message;
+        _toastBar.Visibility = Visibility.Visible;
+        _toastTimer?.Stop();
+        _toastTimer = new System.Windows.Threading.DispatcherTimer
+            { Interval = TimeSpan.FromSeconds(5) };
+        _toastTimer.Tick += (_, _) => HideToast();
+        _toastTimer.Start();
+    }
+
+    private void HideToast()
+    {
+        _toastTimer?.Stop();
+        _toastBar.Visibility = Visibility.Collapsed;
     }
 
     private void OnWindowPreviewKeyDown(object? sender, KeyEventArgs e)
@@ -1141,21 +1748,53 @@ internal class ClipboardHistoryWindow : Window
             return;
         }
 
+        bool shift = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+
         switch (e.Key)
         {
+            case Key.Tab:
+                if (_mode == HistoryMode.Files && _chipsPanel.Children.Count > 0)
+                {
+                    int count    = _chipsPanel.Children.Count;
+                    int newIndex = _chipFocusIndex < 0
+                        ? (shift ? count - 1 : 0)
+                        : ((_chipFocusIndex + (shift ? -1 : 1)) % count + count) % count;
+                    NavigateToChip(newIndex);
+                    e.Handled = true;
+                }
+                break;
+
             case Key.Down:
-                if (_selectedIndex < _cardList.Count - 1)
-                    SetSelectedIndex(_selectedIndex + 1);
-                else if (_selectedIndex < 0 && _cardList.Count > 0)
-                    SetSelectedIndex(0);
+                if (_chipFocusIndex >= 0 && _mode == HistoryMode.Files)
+                {
+                    _chipFocusIndex = -1;
+                    RefreshChips();
+                    if (_selectedIndex < 0 && _cardList.Count > 0) SetSelectedIndex(0);
+                }
+                else
+                {
+                    if (_selectedIndex < _cardList.Count - 1)
+                        SetSelectedIndex(_selectedIndex + 1);
+                    else if (_selectedIndex < 0 && _cardList.Count > 0)
+                        SetSelectedIndex(0);
+                }
                 e.Handled = true;
                 break;
 
             case Key.Up:
-                if (_selectedIndex > 0)
-                    SetSelectedIndex(_selectedIndex - 1);
-                else if (_selectedIndex < 0 && _cardList.Count > 0)
-                    SetSelectedIndex(0);
+                if (_chipFocusIndex >= 0 && _mode == HistoryMode.Files)
+                {
+                    _chipFocusIndex = -1;
+                    RefreshChips();
+                    if (_selectedIndex < 0 && _cardList.Count > 0) SetSelectedIndex(0);
+                }
+                else
+                {
+                    if (_selectedIndex > 0)
+                        SetSelectedIndex(_selectedIndex - 1);
+                    else if (_selectedIndex < 0 && _cardList.Count > 0)
+                        SetSelectedIndex(0);
+                }
                 e.Handled = true;
                 break;
 
@@ -1170,9 +1809,29 @@ internal class ClipboardHistoryWindow : Window
                 break;
 
             case Key.Enter:
-                if (_selectedIndex >= 0 && _selectedIndex < _cardList.Count)
+                if (_chipFocusIndex >= 0 && _mode == HistoryMode.Files)
+                {
+                    if (_chipFocusIndex == _chipsPanel.Children.Count - 1)
+                        OpenFolderPicker();
+                    e.Handled = true;
+                }
+                else if (_selectedIndex >= 0 && _selectedIndex < _cardList.Count)
                 {
                     _cardList[_selectedIndex].OnActivate();
+                    e.Handled = true;
+                }
+                break;
+
+            case Key.F2:
+                if (_mode == HistoryMode.Files &&
+                    _selectedIndex >= 0 && _selectedIndex < _cardList.Count)
+                {
+                    var cardEntry = _cardList[_selectedIndex].Entry;
+                    if (cardEntry is SavedFileEntry fe)
+                    {
+                        string? fp = GetFullPathForCardEntry(fe);
+                        ShowCardRenameDialog(fe, fp);
+                    }
                     e.Handled = true;
                 }
                 break;
@@ -1232,6 +1891,134 @@ internal class ClipboardHistoryWindow : Window
     private void OpenSavedFile(SavedFileEntry entry) =>
         NotepadWindow.OpenOrFocusSavedFile(entry, _targetWindow);
 
+    // ── Card rename ───────────────────────────────────────────────────────
+
+    private string? GetFullPathForCardEntry(SavedFileEntry entry)
+    {
+        // Reconstruct fullPath from the active chip filter context
+        string? active = FolderChipsStore.Active;
+        if (string.IsNullOrEmpty(active)) return null;  // top-level library file
+        // Find the file in the active folder by matching entry
+        var folderFiles = FolderChipsStore.LoadFolder(active);
+        foreach (var (e, path) in folderFiles)
+            if (e.FileName == entry.FileName && e.LastModified == entry.LastModified)
+                return path;
+        return null;
+    }
+
+    private void DuplicateFile(SavedFileEntry entry, string sourcePath, string folder)
+    {
+        string baseName = System.IO.Path.GetFileNameWithoutExtension(sourcePath);
+        // Strip any existing " (N)" suffix so we always count from the original name
+        var m = System.Text.RegularExpressions.Regex.Match(baseName, @"^(.*) \((\d+)\)$");
+        string root = m.Success ? m.Groups[1].Value : baseName;
+
+        string destPath = "";
+        for (int n = 2; n < 1000; n++)
+        {
+            string candidate = System.IO.Path.Combine(folder, $"{root} ({n}).mnp");
+            if (!System.IO.File.Exists(candidate)) { destPath = candidate; break; }
+        }
+        if (destPath.Length == 0) return;
+
+        try { System.IO.File.Copy(sourcePath, destPath); }
+        catch { }
+    }
+
+    private void ShowCardRenameDialog(SavedFileEntry entry, string? fullPath)
+    {
+        string sourceFile = fullPath ?? Formatting.SavedFileStore.GetFilePath(entry.FileName);
+        string fileDir    = System.IO.Path.GetDirectoryName(sourceFile)!;
+        string oldName    = entry.FileName;
+        bool   isLib      = fullPath == null;
+
+        _suppressDeactivationHwndCapture = true;
+
+        var dialog = new Window
+        {
+            Title                 = "Rename File",
+            Width                 = 320,
+            SizeToContent         = SizeToContent.Height,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ResizeMode            = ResizeMode.NoResize,
+            Owner                 = this,
+            ShowInTaskbar         = false,
+            Background            = new SolidColorBrush(Color.FromRgb(0xF8, 0xF8, 0xF8))
+        };
+
+        var stack = new StackPanel { Margin = new Thickness(14) };
+
+        var nameBox = new TextBox
+        {
+            Text   = oldName,
+            Height = 26,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 6)
+        };
+
+        var errorLabel = MakeErrorLabel();
+        errorLabel.Margin = new Thickness(0, 0, 0, 6);
+
+        var renameBtn = new Button { Content = "Rename", Width = 80, IsDefault = true };
+        var cancelBtn = new Button { Content = "Cancel", Width = 70, Margin = new Thickness(6, 0, 0, 0), IsCancel = true };
+        var btnRow = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        btnRow.Children.Add(renameBtn);
+        btnRow.Children.Add(cancelBtn);
+
+        stack.Children.Add(nameBox);
+        stack.Children.Add(errorLabel);
+        stack.Children.Add(btnRow);
+        dialog.Content = stack;
+
+        void TryRename()
+        {
+            string newName = nameBox.Text.Trim();
+            if (string.IsNullOrEmpty(newName)) return;
+            if (newName == oldName) { dialog.Close(); return; }
+
+            // Validate filename chars
+            char[] bad = newName.Where(c => System.IO.Path.GetInvalidFileNameChars().Contains(c)).ToArray();
+            if (bad.Length > 0)
+            {
+                errorLabel.Text       = "Invalid characters: " + string.Join(" ", bad.Select(c => $"'{c}'"));
+                errorLabel.Visibility = Visibility.Visible;
+                return;
+            }
+
+            string newFile = System.IO.Path.Combine(fileDir, newName + ".mnp");
+            if (System.IO.File.Exists(newFile))
+            {
+                errorLabel.Text       = $"\"{newName}\" already exists in this folder.";
+                errorLabel.Visibility = Visibility.Visible;
+                return;
+            }
+
+            try
+            {
+                System.IO.File.Move(sourceFile, newFile);
+                // FileSystemWatcher fires → RefreshCards automatically
+                dialog.Close();
+            }
+            catch (Exception ex)
+            {
+                errorLabel.Text       = "Error: " + ex.Message;
+                errorLabel.Visibility = Visibility.Visible;
+            }
+        }
+
+        renameBtn.Click        += (_, _) => TryRename();
+        cancelBtn.Click        += (_, _) => dialog.Close();
+        nameBox.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter)  { TryRename();    e.Handled = true; }
+            if (e.Key == Key.Escape) { dialog.Close(); e.Handled = true; }
+        };
+
+        dialog.Closed += (_, _) => { _suppressDeactivationHwndCapture = false; Activate(); };
+        dialog.Loaded += (_, _) => { nameBox.Focus(); nameBox.SelectAll(); };
+        dialog.Show();
+    }
+
     // ── Open With (right-click on file cards) ─────────────────────────────
 
     private void ShowOpenWithMenu(UIElement anchor, SavedFileEntry entry, string? fullPath = null)
@@ -1281,9 +2068,187 @@ internal class ClipboardHistoryWindow : Window
         chooseItem.Click += (_, _) => ChooseOtherProgram(filePath);
         menu.Items.Add(chooseItem);
 
+        // 4 — File actions (Files mode only)
+        if (_mode == HistoryMode.Files)
+        {
+            menu.Items.Add(new Separator());
+
+            string cardFolder = fullPath != null
+                ? System.IO.Path.GetDirectoryName(fullPath)!
+                : SavedFileStore.SavedFolder;
+            var newMnpItem = new MenuItem { Header = "    New .mnp file here" };
+            newMnpItem.Click += (_, _) => ShowNewFileDialog(cardFolder);
+            menu.Items.Add(newMnpItem);
+            menu.Items.Add(BuildSortSubmenu(FolderChipsStore.Active));
+
+            var dupItem = new MenuItem { Header = "    Duplicate This File" };
+            dupItem.Click += (_, _) => DuplicateFile(entry, filePath, cardFolder);
+            menu.Items.Add(dupItem);
+
+            menu.Items.Add(new Separator());
+
+            var renameItem = new MenuItem { Header = "    Rename…" };
+            renameItem.Click += (_, _) => ShowCardRenameDialog(entry, fullPath);
+            menu.Items.Add(renameItem);
+
+            var deleteItem = new MenuItem { Header = "    Delete" };
+            deleteItem.Click += (_, _) =>
+            {
+                int idx = _cardList.FindIndex(t => t.Entry.Equals(entry));
+                if (idx >= 0) DeleteCard(idx);
+            };
+            menu.Items.Add(deleteItem);
+
+            menu.Items.Add(new Separator());
+            menu.Items.Add(BuildFolderSubmenu("Move to Folder", entry, fullPath, move: true));
+            menu.Items.Add(BuildFolderSubmenu("Copy to Folder", entry, fullPath, move: false));
+        }
+
         menu.PlacementTarget = anchor;
         menu.Placement       = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
         menu.IsOpen          = true;
+    }
+
+    // ── Move / Copy to folder ─────────────────────────────────────────────
+
+    private MenuItem BuildFolderSubmenu(
+        string label, SavedFileEntry entry, string? fullPath, bool move)
+    {
+        var top = new MenuItem { Header = (move ? "📦  " : "📋  ") + label };
+
+        // Current location as relative path (null = base folder)
+        string? currentRel = null;
+        if (fullPath != null)
+        {
+            try
+            {
+                string root = System.IO.Path.GetFullPath(FolderChipsStore.Root);
+                string dir  = System.IO.Path.GetDirectoryName(fullPath)!;
+                string rel  = System.IO.Path.GetRelativePath(root, dir).Replace('\\', '/');
+                currentRel  = rel == "." ? null : rel;
+            }
+            catch { }
+        }
+
+        var folders  = FolderChipsStore.EnumerateSubfolders(); // sorted alphabetically
+        bool showAll = folders.Count > 20;
+        int  limit   = showAll ? 19 : folders.Count;
+
+        // ── Main (base folder) ────────────────────────────────────────────
+        top.Items.Add(MakeFolderDestItem("Main  (base folder)", 0, null, currentRel, entry, fullPath, move));
+
+        if (folders.Count > 0)
+            top.Items.Add(new Separator());
+
+        // ── Subfolders ────────────────────────────────────────────────────
+        foreach (var rel in folders.Take(limit))
+        {
+            int    depth = rel.Count(c => c == '/') + 1;
+            string name  = rel.Contains('/') ? rel[(rel.LastIndexOf('/') + 1)..] : rel;
+            top.Items.Add(MakeFolderDestItem(name, depth, rel, currentRel, entry, fullPath, move));
+        }
+
+        // ── Show all folders… ─────────────────────────────────────────────
+        if (showAll)
+        {
+            top.Items.Add(new Separator());
+            var more = new MenuItem
+            {
+                Header   = "    Show all folders…",
+                FontStyle = FontStyles.Italic
+            };
+            more.Click += (_, _) =>
+            {
+                _suppressDeactivationHwndCapture = true;
+                var dlg = new FolderPickerDialog(this,
+                    move ? "Select destination folder to move into"
+                         : "Select destination folder to copy into");
+                bool? result = dlg.ShowDialog();
+                _suppressDeactivationHwndCapture = false;
+                Activate();
+                if (result == true)
+                    ExecuteMoveOrCopy(entry, fullPath, dlg.SelectedRelative, move);
+            };
+            top.Items.Add(more);
+        }
+
+        return top;
+    }
+
+    private MenuItem MakeFolderDestItem(
+        string name, int depth, string? destRel,
+        string? currentRel, SavedFileEntry entry, string? fullPath, bool move)
+    {
+        bool isCurrent = string.Equals(
+            destRel  ?? "", currentRel ?? "",
+            StringComparison.OrdinalIgnoreCase);
+
+        var label = new TextBlock
+        {
+            Text              = "📁  " + name,
+            Margin            = new Thickness(depth * 14, 0, 6, 0),
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground        = isCurrent
+                ? new SolidColorBrush(Color.FromRgb(0xAA, 0xAA, 0xAA))
+                : SystemColors.ControlTextBrush
+        };
+
+        var item = new MenuItem
+        {
+            Header    = label,
+            IsEnabled = !isCurrent,
+            ToolTip   = destRel is { Length: > 0 } ? destRel : "(base folder)"
+        };
+
+        if (!isCurrent)
+        {
+            var rel = destRel;
+            item.Click += (_, _) => ExecuteMoveOrCopy(entry, fullPath, rel, move);
+        }
+
+        return item;
+    }
+
+    private void ExecuteMoveOrCopy(
+        SavedFileEntry entry, string? fullPath, string? destRel, bool move)
+    {
+        string sourceFile = fullPath ?? Formatting.SavedFileStore.GetFilePath(entry.FileName);
+        string destDir    = string.IsNullOrEmpty(destRel)
+            ? System.IO.Path.GetFullPath(Formatting.SavedFileStore.SavedFolder)
+            : FolderChipsStore.FullPath(destRel);
+        string destFile   = System.IO.Path.Combine(destDir,
+            System.IO.Path.GetFileName(sourceFile));
+
+        if (string.Equals(sourceFile, destFile, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        try { System.IO.Directory.CreateDirectory(destDir); } catch { }
+
+        if (System.IO.File.Exists(destFile))
+        {
+            string verb = move ? "Move" : "Copy";
+            if (MessageBox.Show(
+                    $"\"{System.IO.Path.GetFileName(sourceFile)}\" already exists in the destination. Overwrite?",
+                    $"{verb} File", MessageBoxButton.YesNo, MessageBoxImage.Question)
+                != MessageBoxResult.Yes)
+                return;
+        }
+
+        try
+        {
+            if (move)
+                System.IO.File.Move(sourceFile, destFile, overwrite: true);
+            else
+                System.IO.File.Copy(sourceFile, destFile, overwrite: true);
+            // FileSystemWatcher fires SavedFilesChanged → RefreshCards automatically
+        }
+        catch (Exception ex)
+        {
+            string verb = move ? "move" : "copy";
+            MessageBox.Show($"Could not {verb} file:\n{ex.Message}",
+                move ? "Move File" : "Copy File",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void OpenFileWith(string exePath, string name, string filePath)

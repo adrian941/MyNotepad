@@ -7,6 +7,8 @@ using MinimalNotepad.Config;
 
 namespace MinimalNotepad.Formatting
 {
+    public enum ChipSortOrder { DateDesc, DateAsc, NameAsc, NameDesc }
+
     /// <summary>
     /// Persists the "folder chips" shown above the Files view and which one is active.
     /// Chips are relative subfolder paths (e.g. "Recall", "Recall/Details") under the
@@ -21,8 +23,9 @@ namespace MinimalNotepad.Formatting
 
         sealed class State
         {
-            public List<string> Chips  { get; set; } = new();
-            public string?      Active { get; set; }
+            public List<string>               Chips     { get; set; } = new();
+            public string?                    Active    { get; set; }
+            public Dictionary<string, string> SortPrefs { get; set; } = new();
         }
 
         static readonly State _state = Load();
@@ -94,6 +97,99 @@ namespace MinimalNotepad.Formatting
             _state.Chips.RemoveAll(c => string.Equals(c, rel, StringComparison.OrdinalIgnoreCase));
             if (string.Equals(_state.Active, rel, StringComparison.OrdinalIgnoreCase))
                 _state.Active = null;
+            RemoveSortPref(rel);
+            Save();
+        }
+
+        // ── Sort preferences ─────────────────────────────────────────────────
+        public static ChipSortOrder GetSort(string? rel)
+        {
+            string key = string.IsNullOrEmpty(rel) ? "" : Normalize(rel);
+            foreach (var kvp in _state.SortPrefs)
+                if (string.Equals(kvp.Key, key, StringComparison.OrdinalIgnoreCase) &&
+                    Enum.TryParse<ChipSortOrder>(kvp.Value, out var o))
+                    return o;
+            return ChipSortOrder.DateDesc;
+        }
+
+        public static void SetSort(string? rel, ChipSortOrder order)
+        {
+            string key = string.IsNullOrEmpty(rel) ? "" : Normalize(rel);
+            _state.SortPrefs[key] = order.ToString();
+            Save();
+        }
+
+        private static void RemoveSortPref(string rel)
+        {
+            var keys = _state.SortPrefs.Keys
+                .Where(k => string.Equals(k, rel, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var k in keys) _state.SortPrefs.Remove(k);
+        }
+
+        public static void MoveChip(int fromIndex, int toIndex)
+        {
+            int n = _state.Chips.Count;
+            if (fromIndex < 0 || fromIndex >= n || toIndex < 0 || toIndex > n) return;
+            if (fromIndex == toIndex || fromIndex == toIndex - 1) return;
+            string chip = _state.Chips[fromIndex];
+            _state.Chips.RemoveAt(fromIndex);
+            int insertAt = toIndex > fromIndex ? toIndex - 1 : toIndex;
+            _state.Chips.Insert(insertAt, chip);
+            Save();
+        }
+
+        public static (bool Success, string? Error) RenameFolder(string oldRel, string newRel)
+        {
+            oldRel = Normalize(oldRel);
+            newRel = Normalize(newRel);
+            if (string.Equals(oldRel, newRel, StringComparison.OrdinalIgnoreCase))
+                return (false, "The name is unchanged.");
+            string oldFull = FullPath(oldRel);
+            string newFull = FullPath(newRel);
+            if (!Directory.Exists(oldFull)) return (false, "Folder not found.");
+            if (Directory.Exists(newFull))
+                return (false, $"A folder named \"{Path.GetFileName(newRel)}\" already exists.");
+            SavedFileStore.StopWatcher();
+            try
+            {
+                Directory.Move(oldFull, newFull);
+                UpdateChipPaths(oldRel, newRel);
+                return (true, null);
+            }
+            catch (Exception ex) { return (false, ex.Message); }
+            finally { SavedFileStore.RestartWatcher(); }
+        }
+
+        private static void UpdateChipPaths(string oldRel, string newRel)
+        {
+            for (int i = 0; i < _state.Chips.Count; i++)
+            {
+                if (_state.Chips[i].Equals(oldRel, StringComparison.OrdinalIgnoreCase))
+                    _state.Chips[i] = newRel;
+                else if (_state.Chips[i].StartsWith(oldRel + "/", StringComparison.OrdinalIgnoreCase))
+                    _state.Chips[i] = newRel + _state.Chips[i][oldRel.Length..];
+            }
+            if (_state.Active != null)
+            {
+                if (_state.Active.Equals(oldRel, StringComparison.OrdinalIgnoreCase))
+                    _state.Active = newRel;
+                else if (_state.Active.StartsWith(oldRel + "/", StringComparison.OrdinalIgnoreCase))
+                    _state.Active = newRel + _state.Active[oldRel.Length..];
+            }
+            // Migrate sort prefs whose keys match the renamed prefix
+            var moved = _state.SortPrefs
+                .Where(kv => kv.Key.Equals(oldRel, StringComparison.OrdinalIgnoreCase) ||
+                             kv.Key.StartsWith(oldRel + "/", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var kv in moved)
+            {
+                _state.SortPrefs.Remove(kv.Key);
+                string newKey = kv.Key.Equals(oldRel, StringComparison.OrdinalIgnoreCase)
+                    ? newRel
+                    : newRel + kv.Key[oldRel.Length..];
+                _state.SortPrefs[newKey] = kv.Value;
+            }
             Save();
         }
 

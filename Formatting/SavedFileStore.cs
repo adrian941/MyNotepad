@@ -57,6 +57,21 @@ namespace MinimalNotepad.Formatting
             Application.Current?.Dispatcher.InvokeAsync(() => SavedFilesChanged?.Invoke());
         }
 
+        public static void StopWatcher()
+        {
+            if (_watcher == null) return;
+            _watcher.EnableRaisingEvents = false;
+            _watcher.Dispose();
+            _watcher = null;
+        }
+
+        public static void RestartWatcher()
+        {
+            _watcher?.Dispose();
+            _watcher = null;
+            StartWatcher();
+        }
+
         public static bool FileExists(string name)
         {
             EnsureFolder();
@@ -150,6 +165,16 @@ namespace MinimalNotepad.Formatting
         {
             string fp = GetDisplayFingerprint();
             Save(entry.FileName, entry.PlainText, entry.RichJson,
+                entry.WindowWidth, entry.WindowHeight, entry.FontSize,
+                entry.WindowLeft.HasValue ? fp : null, entry.WindowLeft, entry.WindowTop);
+        }
+
+        public static void RestoreToPath(SavedFileEntry entry, string fullPath)
+        {
+            string dir = Path.GetDirectoryName(fullPath)!;
+            try { Directory.CreateDirectory(dir); } catch { }
+            string fp = GetDisplayFingerprint();
+            SaveToPath(fullPath, entry.PlainText, entry.RichJson,
                 entry.WindowWidth, entry.WindowHeight, entry.FontSize,
                 entry.WindowLeft.HasValue ? fp : null, entry.WindowLeft, entry.WindowTop);
         }
