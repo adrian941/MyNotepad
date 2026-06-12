@@ -25,7 +25,8 @@
       "PowerShell(Start-Process \"C:\\\\Developer\\\\repos-utils\\\\MyNotepad\\\\bin\\\\Debug\\\\net10.0-windows\\\\MyNotepad.exe\")",
       "Bash(taskkill /F /IM MyNotepad.exe)",
       "Bash(grep -v \"FindReplaceBar\\\\|\\\\\\\\\\\\\\\\obj\\\\\\\\\\\\\\\\\")",
-      "PowerShell(taskkill *)"
+      "PowerShell(taskkill *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Developer\\\\repos-utils\\\\MyNotepad\" -Recurse -File -Name)"
     ]
   }
 }

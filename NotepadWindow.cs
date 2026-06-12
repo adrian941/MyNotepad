@@ -1218,7 +1218,7 @@ namespace MinimalNotepad
             {
                 Title                 = "Save As:",
                 Width                 = 320,
-                Height                = 145,
+                SizeToContent         = SizeToContent.Height,
                 WindowStartupLocation = WindowStartupLocation.CenterOwner,
                 ResizeMode            = ResizeMode.NoResize,
                 Owner                 = this,
@@ -1235,15 +1235,47 @@ namespace MinimalNotepad
             var textBox = new TextBox
             {
                 Text   = _savedFileName ?? "",
-                Margin = new Thickness(0, 0, 0, 6)
+                Margin = new Thickness(0, 0, 0, 8)
             };
+
+            // ── Save In combobox ──────────────────────────────────────────────
+            var saveInLabel = new TextBlock
+            {
+                Text       = "Save in:",
+                FontSize   = 11,
+                Margin     = new Thickness(0, 0, 0, 3),
+                Foreground = new SolidColorBrush(Color.FromRgb(0x33, 0x33, 0x44))
+            };
+            var saveInBox = new ComboBox { Margin = new Thickness(0, 0, 0, 8) };
+            saveInBox.Items.Add(new ComboBoxItem { Content = "Main", Tag = (string?)null });
+            foreach (var rel in FolderChipsStore.EnumerateSubfolders())
+            {
+                int depth    = rel.Count(c => c == '/');
+                string indent = new string(' ', depth * 2);
+                string name   = rel.Contains('/') ? rel[(rel.LastIndexOf('/') + 1)..] : rel;
+                saveInBox.Items.Add(new ComboBoxItem
+                {
+                    Content = indent + name,
+                    Tag     = rel,
+                    ToolTip = rel
+                });
+            }
+            // Pre-select the currently active chip (or Main)
+            string? preselect = FolderChipsStore.Active;
+            saveInBox.SelectedIndex = 0;
+            if (preselect != null)
+            {
+                foreach (ComboBoxItem ci in saveInBox.Items)
+                    if (string.Equals(ci.Tag as string, preselect, StringComparison.OrdinalIgnoreCase))
+                    { saveInBox.SelectedItem = ci; break; }
+            }
 
             var errorLabel = new TextBlock
             {
-                Foreground  = new SolidColorBrush(Color.FromRgb(0xCC, 0x30, 0x30)),
-                FontSize    = 11,
-                Margin      = new Thickness(0, 0, 0, 6),
-                Visibility  = Visibility.Collapsed,
+                Foreground   = new SolidColorBrush(Color.FromRgb(0xCC, 0x30, 0x30)),
+                FontSize     = 11,
+                Margin       = new Thickness(0, 0, 0, 6),
+                Visibility   = Visibility.Collapsed,
                 TextWrapping = TextWrapping.Wrap
             };
 
@@ -1265,7 +1297,6 @@ namespace MinimalNotepad
                     return;
                 }
 
-                // Forbid path-separator and other illegal chars
                 char[] illegal = Path.GetInvalidFileNameChars();
                 if (name.IndexOfAny(illegal) >= 0)
                 {
@@ -1274,17 +1305,40 @@ namespace MinimalNotepad
                     return;
                 }
 
-                // Block overwrite of a different file (allow overwrite of *own* file)
-                if (name != _savedFileName && SavedFileStore.FileExists(name))
+                string? selectedRel = (saveInBox.SelectedItem as ComboBoxItem)?.Tag as string;
+                string targetDir  = string.IsNullOrEmpty(selectedRel)
+                    ? Path.GetFullPath(SavedFileStore.SavedFolder)
+                    : Path.GetFullPath(FolderChipsStore.FullPath(selectedRel));
+                string targetPath = Path.Combine(targetDir, name + ".mnp");
+
+                // Resolve the path the current content is saved at (if any)
+                string? currentPath = _externalPath != null
+                    ? Path.GetFullPath(_externalPath)
+                    : (_savedFileName != null
+                        ? Path.GetFullPath(SavedFileStore.GetFilePath(_savedFileName))
+                        : null);
+                bool isSameFile = currentPath != null &&
+                    string.Equals(currentPath, targetPath, StringComparison.OrdinalIgnoreCase);
+
+                if (!isSameFile && File.Exists(targetPath))
                 {
-                    errorLabel.Text       = $"\"{name}\" already exists in the Saved folder.";
+                    string loc = string.IsNullOrEmpty(selectedRel) ? "the Saved folder" : $"\"{selectedRel}\"";
+                    errorLabel.Text       = $"\"{name}\" already exists in {loc}.";
                     errorLabel.Visibility = Visibility.Visible;
                     return;
                 }
 
                 dialog.Close();
-                _externalPath  = null;   // "Save As <name>" creates a library entry; stop tracking the external path
                 _savedFileName = name;
+                if (string.IsNullOrEmpty(selectedRel))
+                {
+                    _externalPath = null;
+                }
+                else
+                {
+                    Directory.CreateDirectory(targetDir);
+                    _externalPath = targetPath;
+                }
                 SaveCurrentFile(name);
             }
 
@@ -1297,6 +1351,8 @@ namespace MinimalNotepad
 
             buttonPanel.Children.Add(okButton);
             stack.Children.Add(textBox);
+            stack.Children.Add(saveInLabel);
+            stack.Children.Add(saveInBox);
             stack.Children.Add(errorLabel);
             stack.Children.Add(buttonPanel);
             dialog.Content = stack;
@@ -1340,6 +1396,16 @@ namespace MinimalNotepad
         }
 
         // ── Open a saved file (used by ClipboardHistoryWindow) ────────────────
+
+        public void OpenNewWindow()
+        {
+            var newWin = new NotepadWindow(
+                _settings, _settingsFile, _colorEntries, _allWindows,
+                Left + 30, Top + 30);
+            newWin.Show();
+            newWin.Activate();
+            newWin._editor.Focus();
+        }
 
         /// <summary>
         /// Loads the saved file content into this window (replaces entire document).

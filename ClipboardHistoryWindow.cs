@@ -39,6 +39,7 @@ internal class ClipboardHistoryWindow : Window
     // ── Keyboard navigation + undo ────────────────────────────────────────
     private int _selectedIndex = -1;
     private readonly Stack<(HistoryMode Mode, int Index, object Entry, string? FullPath)> _undoStack = new();
+    private List<(HistoryMode Mode, int Index, object Entry, string? FullPath)>? _clearAllUndo;
     private readonly List<(Border Card, Brush NormalBg, Action OnActivate, Action OnDelete, object Entry, string? FullPath)> _cardList = new();
 
     private static readonly Brush _selCardBorder  = new SolidColorBrush(Color.FromRgb(0x55, 0x88, 0xCC));
@@ -303,13 +304,20 @@ internal class ClipboardHistoryWindow : Window
             ni.Click += (_, _) => ShowNewFileDialog(folder);
             menu.Items.Add(ni);
             menu.Items.Add(BuildSortSubmenu(active));
+            var openExp = new MenuItem { Header = "    Open in Explorer" };
+            openExp.Click += (_, _) =>
+            {
+                if (System.IO.Directory.Exists(folder))
+                    System.Diagnostics.Process.Start("explorer.exe", folder);
+            };
+            menu.Items.Add(openExp);
             menu.PlacementTarget = scroll;
             menu.Placement       = PlacementMode.MousePoint;
             menu.IsOpen          = true;
         };
 
         // ── Footer: open folder · clear all · [App][System][Files] · ☰ ────
-        var openFolderLink = MakeFooterLink("📂  Open history folder");
+        var openFolderLink = MakeFooterLink("📂  Open appdata folder");
         openFolderLink.MouseLeftButtonUp += (_, _) =>
         {
             string dir = _mode == HistoryMode.Files
@@ -325,31 +333,31 @@ internal class ClipboardHistoryWindow : Window
         var clearAllLink = MakeFooterLink("🗑  Clear all");
         clearAllLink.MouseLeftButtonUp += (_, _) =>
         {
-            _suppressDeactivationHwndCapture = true;
+            if (_cardList.Count == 0) return;
+            var batch = _cardList
+                .Select((item, i) => (_mode, i, item.Entry, item.FullPath))
+                .ToList();
+            _clearAllUndo = batch;
+            _undoStack.Clear();
             if (_mode == HistoryMode.Files)
             {
-                var result = MessageBox.Show(
-                    "Delete all saved files?",
-                    "Clear Saved Files",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question);
-                _suppressDeactivationHwndCapture = false;
-                if (result == MessageBoxResult.Yes)
-                    SavedFileStore.DeleteAll();
+                foreach (var item in batch)
+                {
+                    if (item.Entry is SavedFileEntry fe)
+                    {
+                        string p = item.FullPath ?? SavedFileStore.GetFilePath(fe.FileName);
+                        try { System.IO.File.Delete(p); } catch { }
+                    }
+                }
+                int n = batch.Count;
+                ShowToast($"Cleared {n} file{(n == 1 ? "" : "s")} — Undo?");
             }
             else
             {
-                var result = MessageBox.Show(
-                    "Are you sure you want to clear the entire clipboard history?",
-                    "Clear History",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Question);
-                _suppressDeactivationHwndCapture = false;
-                if (result == MessageBoxResult.Yes)
-                {
-                    if (_mode == HistoryMode.App) ClipboardHistory.ClearAll();
-                    else NormalClipboardHistory.ClearAll();
-                }
+                if (_mode == HistoryMode.App) ClipboardHistory.ClearAll();
+                else NormalClipboardHistory.ClearAll();
+                int n = batch.Count;
+                ShowToast($"Cleared {n} item{(n == 1 ? "" : "s")} — Undo?");
             }
             Activate();
         };
@@ -1134,6 +1142,9 @@ internal class ClipboardHistoryWindow : Window
             Foreground        = new SolidColorBrush(active ? Colors.White : Color.FromRgb(0x55, 0x55, 0x60))
         };
 
+        var xNormalFg = new SolidColorBrush(active
+            ? Color.FromArgb(0xDD, 0xFF, 0xFF, 0xFF)
+            : Color.FromRgb(0xAA, 0xAA, 0xB0));
         var x = new TextBlock
         {
             Text              = "✕",
@@ -1141,11 +1152,13 @@ internal class ClipboardHistoryWindow : Window
             Margin            = new Thickness(5, 0, 0, 0),
             VerticalAlignment = VerticalAlignment.Center,
             Cursor            = Cursors.Hand,
-            Foreground        = new SolidColorBrush(active
-                                    ? Color.FromArgb(0xDD, 0xFF, 0xFF, 0xFF)
-                                    : Color.FromRgb(0xAA, 0xAA, 0xB0)),
+            Foreground        = xNormalFg,
             ToolTip           = "Remove chip"
         };
+        x.MouseEnter += (_, _) =>
+            x.Foreground = new SolidColorBrush(Color.FromRgb(0xCC, 0x30, 0x30));
+        x.MouseLeave += (_, _) =>
+            x.Foreground = xNormalFg;
         x.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
@@ -1244,7 +1257,7 @@ internal class ClipboardHistoryWindow : Window
                     t => t.Entry.LastModified, t => t.Entry.FileName);
                 if (folderFiles.Count == 0)
                 {
-                    ShowEmptyMessage($"No .mnp files in \"{active}\"."); _selectedIndex = -1; return;
+                    ShowFolderEmptyMessage(active); _selectedIndex = -1; return;
                 }
                 foreach (var (f, fullPath) in folderFiles)
                 {
@@ -1313,6 +1326,34 @@ internal class ClipboardHistoryWindow : Window
             TextAlignment = TextAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Stretch
         });
+    }
+
+    private void ShowFolderEmptyMessage(string active)
+    {
+        var emptyColor = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99));
+        _cardsPanel.Children.Add(new TextBlock
+        {
+            Text                = "No saved files yet.",
+            FontSize            = 12,
+            Foreground          = emptyColor,
+            Margin              = new Thickness(0, 20, 0, 0),
+            TextAlignment       = TextAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        });
+        var createLink = new TextBlock
+        {
+            Text                = "Create a first file in this directory",
+            FontSize            = 12,
+            Foreground          = emptyColor,
+            TextDecorations     = TextDecorations.Underline,
+            Cursor              = Cursors.Hand,
+            Margin              = new Thickness(0, 5, 0, 0),
+            TextAlignment       = TextAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Stretch
+        };
+        createLink.MouseLeftButtonUp += (_, _) =>
+            ShowNewFileDialog(FolderChipsStore.FullPath(active));
+        _cardsPanel.Children.Add(createLink);
     }
 
     private (Border Card, Brush NormalBg, Action OnActivate, Action OnDelete) BuildCard(ClipboardEntry entry)
@@ -1642,6 +1683,7 @@ internal class ClipboardHistoryWindow : Window
     {
         if (index < 0 || index >= _cardList.Count) return;
         var info = _cardList[index];
+        _clearAllUndo = null;
         _undoStack.Push((_mode, index, info.Entry, info.FullPath));
         info.OnDelete();
         ShowToast("Deleted — Undo?");
@@ -1651,22 +1693,45 @@ internal class ClipboardHistoryWindow : Window
     private void UndoDelete()
     {
         HideToast();
-        if (_undoStack.Count == 0) return;
-        var (mode, index, entry, fullPath) = _undoStack.Pop();
 
-        if (entry is ClipboardEntry clipEntry)
+        if (_clearAllUndo != null)
         {
-            _selectedIndex = index;
-            if (mode == HistoryMode.App) ClipboardHistory.InsertAt(index, clipEntry);
-            else                         NormalClipboardHistory.InsertAt(index, clipEntry);
+            var batch = _clearAllUndo;
+            _clearAllUndo = null;
+            foreach (var (mode, index, entry, fullPath) in batch.OrderBy(x => x.Index))
+            {
+                if (entry is ClipboardEntry clipEntry)
+                {
+                    if (mode == HistoryMode.App) ClipboardHistory.InsertAt(index, clipEntry);
+                    else                         NormalClipboardHistory.InsertAt(index, clipEntry);
+                }
+                else if (entry is SavedFileEntry fileEntry)
+                {
+                    if (!string.IsNullOrEmpty(fullPath))
+                        SavedFileStore.RestoreToPath(fileEntry, fullPath);
+                    else
+                        SavedFileStore.Restore(fileEntry);
+                }
+            }
+            return;
         }
-        else if (entry is SavedFileEntry fileEntry)
+
+        if (_undoStack.Count == 0) return;
+        var (singleMode, singleIndex, singleEntry, singleFullPath) = _undoStack.Pop();
+
+        if (singleEntry is ClipboardEntry singleClipEntry)
+        {
+            _selectedIndex = singleIndex;
+            if (singleMode == HistoryMode.App) ClipboardHistory.InsertAt(singleIndex, singleClipEntry);
+            else                               NormalClipboardHistory.InsertAt(singleIndex, singleClipEntry);
+        }
+        else if (singleEntry is SavedFileEntry singleFileEntry)
         {
             _selectedIndex = 0;
-            if (!string.IsNullOrEmpty(fullPath))
-                SavedFileStore.RestoreToPath(fileEntry, fullPath);
+            if (!string.IsNullOrEmpty(singleFullPath))
+                SavedFileStore.RestoreToPath(singleFileEntry, singleFullPath);
             else
-                SavedFileStore.Restore(fileEntry);
+                SavedFileStore.Restore(singleFileEntry);
         }
     }
 
@@ -1744,6 +1809,13 @@ internal class ClipboardHistoryWindow : Window
         if (ctrl && e.Key == Key.Z)
         {
             UndoDelete();
+            e.Handled = true;
+            return;
+        }
+
+        if (ctrl && e.Key == Key.N)
+        {
+            _targetWindow.OpenNewWindow();
             e.Handled = true;
             return;
         }
