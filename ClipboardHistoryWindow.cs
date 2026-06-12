@@ -2457,6 +2457,28 @@ internal class ClipboardHistoryWindow : Window
 
     // ── Rich text helpers ─────────────────────────────────────────────────
 
+    // Replaces HYPHEN-MINUS (U+002D) with NON-BREAKING HYPHEN (U+2011) when the
+    // character immediately after the hyphen is not whitespace.  Visually identical
+    // but prevents WPF's line-break algorithm from splitting "intr-un" as "intr-u / n".
+    // 1-for-1 replacement, so span offsets remain valid.
+    private static string WithNonBreakingHyphens(string text)
+    {
+        if (!text.Contains('-')) return text;
+        var sb = new System.Text.StringBuilder(text.Length);
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c == '-' && i + 1 < text.Length)
+            {
+                char next = text[i + 1];
+                sb.Append(next != ' ' && next != '\t' && next != '\n' && next != '\r'
+                    ? '‑' : '-');
+            }
+            else sb.Append(c);
+        }
+        return sb.ToString();
+    }
+
     private static TextBlock BuildFormattedBlock(
         string text,
         List<FormattingManager.SpanRecord>? spans,
@@ -2473,6 +2495,8 @@ internal class ClipboardHistoryWindow : Window
         };
 
         if (string.IsNullOrEmpty(text)) return tb;
+
+        text = WithNonBreakingHyphens(text);
 
         if (spans == null || spans.Count == 0)
         {

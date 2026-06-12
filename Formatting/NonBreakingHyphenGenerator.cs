@@ -1,18 +1,18 @@
+using System.Windows.Media.TextFormatting;
 using ICSharpCode.AvalonEdit.Rendering;
 
 namespace MinimalNotepad.Formatting
 {
     /// <summary>
-    /// Prevents WPF word-wrap from splitting a hyphen/dash from the character that
-    /// immediately follows it (e.g. "->" stays on the same visual line).
+    /// Prevents WPF word-wrap from breaking a line at a hyphen that has a
+    /// non-space character after it (e.g. "intr-un" or "->" never get split).
     ///
-    /// Works at render time, so it covers both typed text AND pasted text without
-    /// modifying the document.  The document still stores the original U+002D character,
-    /// which copies and pastes correctly to external apps.
+    /// Works at render time without modifying the document. The document still
+    /// stores U+002D, which copies and pastes correctly to external apps.
     ///
-    /// How: combines "-" + nextChar into one FormattedTextElement (documentLength = 2).
-    /// WPF TextFormatter treats the element as an indivisible block and cannot break
-    /// between the two characters.
+    /// How: renders the single '-' character as U+2011 NON-BREAKING HYPHEN
+    /// (visually identical, line-break class GL). The element covers exactly
+    /// one document character, so caret movement and selection are per-character.
     /// </summary>
     class NonBreakingHyphenGenerator : VisualLineElementGenerator
     {
@@ -33,9 +33,24 @@ namespace MinimalNotepad.Formatting
 
         public override VisualLineElement ConstructElement(int offset)
         {
-            char next = CurrentContext.Document.GetCharAt(offset + 1);
-            // documentLength = 2 → consumes both '-' and the following char as one unit
-            return new FormattedTextElement("-" + next, 2);
+            return new NonBreakingHyphenText(CurrentContext.VisualLine);
         }
+    }
+
+    /// <summary>
+    /// A 1-character visual element that renders '-' as U+2011 (non-breaking hyphen).
+    /// Inherits VisualLineText so caret, selection, and hit-testing stay per-character.
+    /// </summary>
+    class NonBreakingHyphenText : VisualLineText
+    {
+        public NonBreakingHyphenText(VisualLine parentLine) : base(parentLine, 1) { }
+
+        public override TextRun CreateTextRun(int startVisualColumn, ITextRunConstructionContext context)
+        {
+            return new TextCharacters("‑", 0, 1, TextRunProperties);
+        }
+
+        protected override VisualLineText CreateInstance(int length) =>
+            new NonBreakingHyphenText(ParentVisualLine);
     }
 }
